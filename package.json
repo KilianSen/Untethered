@@ -1,0 +1,16 @@
+{
+  "version": "2.0.0",
+  "urls": [
+    [
+      "untethered.mpy",
+      "dist/untethered.mpy"
+    ]
+  ],
+  "deps": [
+    [
+      "urequests",
+      "latest"
+    ]
+  ],
+  "description": "Untethered: Wireless OTA & Remote Telnet REPL for Raspberry Pi Pico W"
+}

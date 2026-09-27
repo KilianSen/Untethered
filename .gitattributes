@@ -1,0 +1,3 @@
+# Keep build output byte-identical across platforms
+dist/untethered.py text eol=lf
+*.mpy binary

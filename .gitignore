@@ -1,0 +1,29 @@
+﻿# Local device credentials (NEVER commit your real Wi-Fi credentials to Git)
+config.py
+
+# Local backups and temporary scratch files
+scratch/
+*.bak
+*.tmp
+*.ota_new
+version.json
+manifest.json
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE and editor settings
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build output is published from dist/ only
+/lib/
+.untethered_host_seq

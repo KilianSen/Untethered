@@ -1,0 +1,41 @@
+name: Build & Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        # Pinned: the .mpy format must match the MicroPython firmware on the boards
+        run: |
+          pip install mpy-cross==1.29.0.post2
+
+      - name: Bundle & Compile .mpy
+        run: |
+          python tools/bundle.py
+
+      - name: Verify committed dist/ is up to date
+        # mip installs dist/untethered.mpy straight from the repo
+        run: |
+          git diff --exit-code dist/ || (echo "::error::dist/ is stale. Run 'python tools/bundle.py' and commit." && exit 1)
+
+      - name: Run tests
+        run: |
+          python -m unittest discover tests -v
+
+      - name: Dry-run deploy
+        run: |
+          python tools/deploy.py --dry-run
