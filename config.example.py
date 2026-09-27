@@ -9,6 +9,10 @@ WIFI_COUNTRY = "DE"  # ISO 3166-1 alpha-2 country code (e.g. 'DE', 'US', 'GB')
 # Unique identifier for this device in your fleet
 DEVICE_NAME = "pico-w-01"
 
+# Which firmware this board runs (e.g. "radar"). The board then only installs updates deployed
+# with --target naming this group or DEVICE_NAME, and ignores untargeted ones.
+DEVICE_GROUP = None
+
 # Remote REPL (Telnet) Configuration
 ENABLE_TELNET = True   # Set to False to completely disable the wireless Telnet REPL
 TELNET_PORT = 23
@@ -19,11 +23,13 @@ TELNET_PASSWORD = None # Strongly recommended. Telnet is plaintext: this keeps c
 BEACON_PORT = 8266
 BEACON_INTERVAL = 5    # Heartbeat interval in seconds
 
-# OTA Server URL (Points to tools/deploy.py on your host PC)
-OTA_MANIFEST_URL = "http://192.168.1.100:8000/manifest.json"
+# Fixed update address (the Manifest URL printed by tools/deploy.py). Not needed with an
+# OTA_SECRET_KEY: signed boards follow the update notification from whichever PC deploys.
+# Set it for boards without a key, or boards that check on their own (OTA_CHECK_INTERVAL).
+OTA_MANIFEST_URL = None
 
 # OTA Polling Interval (in seconds, 0 to disable periodic polling and rely on push triggers)
-OTA_CHECK_INTERVAL = 300
+OTA_CHECK_INTERVAL = 0
 
 # Cryptographic Signing Key (HMAC-SHA256) - strongly recommended
 # When set, devices reject any update not signed with this exact key, reject replayed or

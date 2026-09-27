@@ -36,7 +36,7 @@ It is a small MicroPython library for the board plus a few Python scripts for yo
   ```bash
   pip install mpremote
   ```
-* **This repository** on your PC, either with `git clone https://github.com/KilianSen/Untethered` or by downloading the *Source code (zip)* of the newest release from the [releases page](https://github.com/KilianSen/Untethered/releases) (see [which version gets installed](#step-4-install-and-configure-the-board)). The PC tools live in its `tools/` folder, and all commands below are run from the repository folder.
+* **This repository** on your PC, either with `git clone https://github.com/KilianSen/Untethered` or by downloading the *Source code (zip)* of the newest release from the [releases page](https://github.com/KilianSen/Untethered/releases) (see [which version gets installed](#step-3-install-and-configure-the-board)). The PC tools live in its `tools/` folder, and all commands below are run from the repository folder.
 
 ---
 
@@ -48,39 +48,23 @@ Download the Pico W firmware (`.uf2`) from [micropython.org/download/RPI_PICO_W]
 
 MicroPython 1.23 or newer is recommended (tested on 1.27).
 
-### Step 2: Find your update address
-
-Boards download updates from your PC, so they need to know your PC's address. Run:
-
-```bash
-python tools/deploy.py --dry-run
-```
-
-and look for the line
-
-```text
- Manifest URL:     http://192.168.1.50:8000/manifest.json  (boards' OTA_MANIFEST_URL)
-```
-
-Copy that URL. It only stays valid while your PC keeps the same IP address.
-
-> **Not sure whether you need a fixed IP?** If your router lets you, give your PC a "DHCP reservation" (usually under *LAN* or *DHCP* settings, look for your PC's name). If it doesn't, skip it: most home routers hand out the same address again anyway. If the address ever changes, boards stop updating and `deploy.py` prints a different *Manifest URL*; then set the new one on each board (see [Troubleshooting](#6-troubleshooting)).
-
-### Step 3: Choose two passwords
+### Step 2: Choose two passwords
 
 * A **Telnet password** that protects the remote Python prompt.
 * An **update key** (signing secret) that makes sure boards only accept updates from you. Any long random text works, e.g. `correct-horse-battery-staple-42`.
 
+The update key also means you never have to tell the board where your PC is: it follows the update notification from whichever computer you deploy from.
+
 > **Not sure? Set both.** It costs nothing and protects you from anyone else on your network (a guest's phone, a compromised smart plug). Skipping them only makes sense for a quick experiment that you wipe afterwards. Save both in your password manager: you need the update key every time you deploy, and without it you can only update the board over USB again.
 
-### Step 4: Install and configure the board
+### Step 3: Install and configure the board
 
-With the board plugged in over USB, run these two commands. Replace the Wi-Fi name, Wi-Fi password, board name, URL, Telnet password and update key with your own:
+With the board plugged in over USB, run these two commands. Replace the Wi-Fi name, Wi-Fi password, board name, Telnet password and update key with your own:
 
 ```bash
 mpremote mip install github:KilianSen/Untethered
 
-mpremote exec "import untethered; untethered.provision('MyWiFi', 'MyWiFiPassword', name='workshop-pico', manifest_url='http://192.168.1.50:8000/manifest.json', telnet_password='my-telnet-password', secret_key='my-update-key')"
+mpremote exec "import untethered; untethered.provision('MyWiFi', 'MyWiFiPassword', name='workshop-pico', telnet_password='my-telnet-password', secret_key='my-update-key')"
 ```
 
 The first command copies the library onto the board. The second one:
@@ -89,17 +73,19 @@ The first command copies the library onto the board. The second one:
 2. writes a two-line `boot.py` that starts the network services every time the board powers on,
 3. connects to Wi-Fi and prints the board's IP address.
 
+If you'll have boards doing different jobs, also pass a group, e.g. `group='radar'` (see [Different firmware for different boards](#step-3-different-firmware-for-different-boards)). A board **without an update key**, or one that should check for updates by itself, also needs `manifest_url=...` (see [Fixed update address](#fixed-update-address)).
+
 Unplug the board and plug it into any USB power supply. From now on you can work on it over Wi-Fi.
 
 > **Which version gets installed?** `github:KilianSen/Untethered` installs whatever is on the `main` branch at that moment, not necessarily a published release. `main` is usually fine, but it can contain changes that haven't been released yet. To install a specific release, add its tag:
 >
 > ```bash
-> mpremote mip install github:KilianSen/Untethered@v2.1.0
+> mpremote mip install github:KilianSen/Untethered@v2.2.0
 > ```
 >
 > The available versions are listed on the [releases page](https://github.com/KilianSen/Untethered/releases). The same `@` works for any branch or commit, so only use tags you trust.
 >
-> **Not sure?** Use the newest release tag. Also keep in mind that `deploy.py` sends the library from *your copy* of this repository to your boards. If you cloned `main`, your boards get `main`; run `git checkout v2.1.0` in the repository folder to match the release.
+> **Not sure?** Use the newest release tag. Also keep in mind that `deploy.py` sends the library from *your copy* of this repository to your boards. If you cloned `main`, your boards get `main`; run `git checkout v2.2.0` in the repository folder to match the release.
 
 > Settings can be changed later by editing `config.py` on the board (over USB, or from the remote REPL). All options are listed in the [settings reference](#7-settings-reference-configpy).
 
@@ -143,10 +129,10 @@ Useful options:
 
 | Option | What it does |
 | :--- | :--- |
-| `--target workshop-pico` | Update only this board (try an update on one board before the others). |
+| `--target workshop-pico` | Update only these boards: names and/or groups, comma-separated (`--target radar`, `--target radar-1,radar-2`). Other boards skip the update, even if they check for updates by themselves. See [Different firmware for different boards](#step-3-different-firmware-for-different-boards). |
 | `--version 1.4.0` | Label the update. Without it, a timestamp like `dev-20260927-220106` is used. Boards show it in the fleet monitor. |
 | `--host-ip 192.168.1.50` | The address boards download from. Only needed if `deploy.py` picked the wrong network (it lists other addresses it found). |
-| `--no-push` | Serve the update without notifying boards. They pick it up on their next scheduled check (see `OTA_CHECK_INTERVAL`). |
+| `--no-push` | Serve the update without notifying boards. Only boards with scheduled checks pick it up (see [Fixed update address](#fixed-update-address)). |
 | `--dry-run` | Only show what would be sent. |
 
 > **Not sure which options you need?** None, to start with. Add `--target` once you have several boards and want to try a risky change on one of them first. Add `--version` when you start caring which board runs which code; a number you raise with every real change (`1.0`, `1.1`, …) is easier to read than a timestamp. `--no-push` is rarely needed.
@@ -154,6 +140,59 @@ Useful options:
 > Tired of typing `--secret`? Set the environment variable `UNTETHERED_SECRET` to your update key, or create a `config.py` with `OTA_SECRET_KEY = "..."` in the repository folder. `deploy.py` picks up either. **Not sure which?** The `config.py` file is the easiest: it's a one-time step and Git already ignores it, so it won't end up on GitHub by accident.
 
 Always pass `--project-dir`. Without it, `deploy.py` uses the current folder if it contains a `main.py`, otherwise the bundled example project.
+
+### Step 3: Different firmware for different boards
+
+If your boards do different jobs (say, radars and weather sensors), give each board a **group** in its `config.py`:
+
+```python
+DEVICE_GROUP = "radar"
+```
+
+(or pass `group='radar'` to `provision(...)`). Then deploy each project to its group:
+
+```bash
+python tools/deploy.py --project-dir C:/pico/radar    --target radar
+python tools/deploy.py --project-dir C:/pico/weather  --target weather
+```
+
+The target list is part of the signed update, so a board only installs updates that name its group or its own name. **A board with a group ignores updates without `--target`**, so forgetting `--target` can't put weather firmware on a radar. Boards without a group take every update without `--target`, as before.
+
+`--target` also takes board names, which is how you try a change on one board first: `--target radar-1`, then `--target radar` once it works.
+
+> **Boards that check by themselves** (`OTA_CHECK_INTERVAL`) only see updates while `deploy.py` is running at their `OTA_MANIFEST_URL`. To serve two groups at once, run one `deploy.py` per group on its own port (`--port 8001`) and point each group's `OTA_MANIFEST_URL` at its port.
+
+### Working from several computers
+
+You can deploy from any computer with a copy of this repository:
+
+* **Same update key everywhere.** Set `UNTETHERED_SECRET` (or `OTA_SECRET_KEY` in the repository's `config.py`) on each computer.
+* **Same library version everywhere.** `deploy.py` sends the Untethered library from the copy it runs in. Keep all computers on the same commit or release tag (`git pull` / `git checkout vX.Y.Z`); otherwise boards swap library versions every time you switch computers.
+* **Clocks set automatically.** Updates are numbered by the computer's clock, and boards refuse numbers lower than the last one they installed. With automatic time (the default on Windows, macOS and Linux), this just works.
+* **Notifications work from anywhere; scheduled checks don't.** Signed boards follow the update notification from whichever computer sends it. A board's `OTA_MANIFEST_URL` points at one computer, so its scheduled checks only find updates served from that one. If you rely on scheduled checks, point it at the computer that is on most, or give that computer a fixed address in your router.
+
+### Fixed update address
+
+Boards with an update key don't need to know where your PC is. Two kinds of board do:
+
+* **Boards without an update key.** They only download from their own `OTA_MANIFEST_URL`, so nobody else on the network can point them at other code. Without one, they ignore update notifications.
+* **Boards that check for updates by themselves** (`OTA_CHECK_INTERVAL`), because there's no notification to follow.
+
+To find the address, run:
+
+```bash
+python tools/deploy.py --dry-run
+```
+
+and look for the line
+
+```text
+ Manifest URL:     http://192.168.1.50:8000/manifest.json  (boards' OTA_MANIFEST_URL)
+```
+
+Pass it to `provision(..., manifest_url='http://192.168.1.50:8000/manifest.json')`, or set `OTA_MANIFEST_URL` in the board's `config.py`. It only stays valid while your PC keeps the same IP address.
+
+> **Not sure whether you need a fixed IP?** Only if you use this address. If your router lets you, give your PC a "DHCP reservation" (usually under *LAN* or *DHCP* settings, look for your PC's name). If it doesn't, skip it: most home routers hand out the same address again anyway. If the address ever changes, these boards stop updating and `deploy.py` prints a different *Manifest URL*; then set the new one on each board (see [Troubleshooting](#6-troubleshooting)).
 
 ---
 
@@ -238,10 +277,10 @@ To close the session, close the window (PuTTY) or press **Ctrl+]** and type `qui
 | Problem | What to check |
 | :--- | :--- |
 | Board doesn't join Wi-Fi | The network must be 2.4 GHz. Check the name and password in `config.py`. The board keeps retrying in the background, so it reconnects once the network is back. |
-| `deploy.py` runs but boards don't update | **Firewall:** allow Python on private networks (Windows asks the first time; if you clicked "Cancel", allow it under *Windows Security → Firewall → Allow an app*). It needs TCP port 8000 and UDP port 8266. Also check that the board's `OTA_MANIFEST_URL` still matches the *Manifest URL* printed by `deploy.py`; your PC's IP may have changed. To change it, connect the board over USB and run the Step 4 `provision(...)` command again with the new URL. |
+| `deploy.py` runs but boards don't update | **Firewall:** allow Python on private networks (Windows asks the first time; if you clicked "Cancel", allow it under *Windows Security → Firewall → Allow an app*). It needs TCP port 8000 and UDP port 8266. Boards without an update key only download from their `OTA_MANIFEST_URL`: check it still matches the *Manifest URL* printed by `deploy.py` (your PC's IP may have changed) and fix it in the board's `config.py` over USB or the remote REPL. Boards with a `DEVICE_GROUP` also need `--target`. |
 | Board prints `SECURITY ERROR ... Signature mismatch` | The update key given to `deploy.py` differs from `OTA_SECRET_KEY` on the board. |
 | Board prints `Manifest is older than the installed one` | The board has already installed a newer update. Just deploy again. If you deploy from more than one PC, their clocks must be roughly right: update numbers come from the clock, so a PC whose clock is behind is rejected until it catches up. |
-| One board didn't update, the others did | It was probably off or still starting when `deploy.py` sent the notification. Run `deploy.py` again. Boards that are often off can check by themselves: set `OTA_CHECK_INTERVAL = 300`. |
+| One board didn't update, the others did | It was probably off or still starting when `deploy.py` sent the notification. Run `deploy.py` again. Boards that are often off can check by themselves: set `OTA_CHECK_INTERVAL = 300` and an `OTA_MANIFEST_URL` ([details](#fixed-update-address)). |
 | Telnet connection refused, board prints `Telnet REPL disabled` | The board has an update key but no Telnet password. Set `TELNET_PASSWORD` in `config.py` (see [the REPL warning](#5-the-remote-repl-telnet)). |
 | Board prints `Push ignored: unsigned board without OTA_MANIFEST_URL` | Set `OTA_MANIFEST_URL` (and ideally `OTA_SECRET_KEY`) on the board. See [Security](#8-security). |
 | `fleet.py` shows no boards | Same firewall rule as above (UDP 8266). Guest networks and some mesh systems block devices from seeing each other. |
@@ -259,9 +298,10 @@ To close the session, close the window (PuTTY) or press **Ctrl+]** and type `qui
 | `WIFI_SSID`, `WIFI_PASSWORD` | – | Your Wi-Fi network. Leave the password empty for open networks. | Your 2.4 GHz network |
 | `WIFI_COUNTRY` | `"DE"` | Two-letter country code for Wi-Fi regulations, e.g. `"US"`, `"GB"`. | The country you're in |
 | `DEVICE_NAME` | `"pico-w"` | The board's name in the fleet monitor and for `--target`. Keep it unique. | Where it is or what it does: `garage-door`, `greenhouse-temp` |
-| `OTA_MANIFEST_URL` | `None` | Where the board looks for updates (the *Manifest URL* from `deploy.py`). | Always set it |
+| `OTA_MANIFEST_URL` | `None` | Fixed address the board downloads updates from (the *Manifest URL* from `deploy.py`). Boards with an update key follow the notification instead. | Only for boards without a key, or with `OTA_CHECK_INTERVAL` ([details](#fixed-update-address)) |
 | `OTA_SECRET_KEY` | `None` | Update key. When set, the board only accepts updates and wipe commands signed with it. | Always set it |
-| `OTA_CHECK_INTERVAL` | `0` | Also check for updates every N seconds (0 = only when `deploy.py` notifies the board). | `0`; `300` for boards that are sometimes off |
+| `OTA_CHECK_INTERVAL` | `0` | Also check for updates every N seconds (0 = only when `deploy.py` notifies the board). Needs `OTA_MANIFEST_URL`. | `0`; `300` for boards that are sometimes off |
+| `DEVICE_GROUP` | `None` | Which firmware the board runs, e.g. `"radar"`. The board then only installs updates deployed with `--target` naming its group or name. | Set it once you have boards doing different jobs |
 | `TELNET_PASSWORD` | `None` | Password for the remote REPL. Required when `OTA_SECRET_KEY` is set, or the REPL stays off. | Always set it |
 | `ENABLE_TELNET` | `True` | Set to `False` to turn the remote REPL off. | `True` while building, `False` once finished |
 | `TELNET_PORT` | `23` | Port of the remote REPL. | Leave it |
@@ -301,7 +341,7 @@ The signing uses HMAC-SHA256 (RFC 2104) with timing-safe comparison and needs no
 | :--- | :--- | :--- | :---: |
 | **`app`** | Your program files (`main.py`, etc.) | **Standby**: the board waits for the next update | Yes |
 | **`system`** | Libraries in `lib/`, except Untethered itself | Your program may be missing its libraries until the next update | Yes |
-| **`all`** | Everything on the board, including `config.py`, `boot.py` and Untethered (only the replay-protection counter stays) | Plain MicroPython, as after Step 1 of setup | **No**: set it up again over USB ([section 2](#2-set-up-a-board-about-10-minutes), from Step 4) |
+| **`all`** | Everything on the board, including `config.py`, `boot.py` and Untethered (only the replay-protection counter stays) | Plain MicroPython, as after Step 1 of setup | **No**: set it up again over USB ([section 2](#2-set-up-a-board-about-10-minutes), from Step 3) |
 
 > **Not sure which one?** `app` when you want to start a new project on the board. `system` only when a library in `lib/` is causing trouble. `all` only when you're giving the board away or want to start completely fresh, and only if you can connect it to USB afterwards.
 
@@ -309,6 +349,7 @@ The signing uses HMAC-SHA256 (RFC 2104) with timing-safe comparison and needs no
 
 ```bash
 python tools/deploy.py --wipe app --target workshop-pico   # one board
+python tools/deploy.py --wipe app --target radar           # every board in a group
 python tools/deploy.py --wipe app                          # all boards
 python tools/deploy.py --wipe all --target workshop-pico   # factory reset (asks first)
 ```
@@ -334,7 +375,7 @@ This section is for the curious. You don't need it to use Untethered.
 * **Power-loss safe.** Downloads go to temporary `.ota_new` files. Only once everything has been verified does the board write a journal and swap the files in. If the power fails during the swap, the board finishes the job at the next start.
 * **Safe library updates.** Before replacing Untethered itself, the board test-imports the new version and rejects the update if it doesn't load (for example an `.mpy` built for a different MicroPython version). When switching between `untethered.py` and `untethered.mpy`, the old one is removed so it can't shadow the new one.
 * **Nothing hangs forever.** Network requests time out after 10 seconds, and a Telnet login is collected piece by piece, so a stalled download or an idle login never blocks announcements or updates. After a failed login, the next attempt is delayed by a second.
-* **Announcements and notifications.** Boards broadcast a small UDP message (name, IP, version, component hashes, status) on port 8266. `deploy.py` sends update notifications to the same port, to all boards or to one `--target`.
+* **Announcements and notifications.** Boards broadcast a small UDP message (name, IP, version, component hashes, status) on port 8266. `deploy.py` sends update notifications to the same port, to all boards or to the `--target` boards and groups. Notifications are only hints: the signed target list in the update decides which boards install it.
 * **Wi-Fi.** The board reconnects automatically after a dropout (retrying every 10 s, backing off to 5 min). During a Telnet session, Wi-Fi power saving is turned off so typing feels instant; it is turned back on afterwards.
 * **Only listed files are served.** `deploy.py`'s web server serves exactly the files in the manifest, so nothing else on your PC (such as a `config.py` with your secrets) can be downloaded. `config.py`, `version.json` and the board's internal state files are never sent to or overwritten on a board.
 
@@ -346,6 +387,7 @@ This section is for the curious. You don't need it to use Untethered.
 * **Networking runs in a thread on Core 1.** MicroPython's threading on the RP2040 is still marked experimental, and its network stack is not fully thread-safe. Test long-running installations well.
 * **The watchdog only guards the network services.** `WATCHDOG_TIMEOUT_MS` restarts the board if the background services or an update freeze, not if your own program hangs without crashing.
 * **Some mistakes still need USB:** a broken `config.py` or `boot.py`, or a full `wipe("all")`.
+* **Targeted updates need v2.2.0 on the board.** Boards on v2.1.0 or older reject updates deployed with `--target` (unsigned ones install them regardless). Update them once without `--target` first.
 * **Upgrading to v2.1.0:** a board with `OTA_SECRET_KEY` but no `TELNET_PASSWORD` now turns its remote REPL off (an open REPL would expose the update key). Updates keep working; set `TELNET_PASSWORD` to get the REPL back.
 * **Upgrading from v1.0.0:** signed updates now include a sequence number, so boards on v1.0.0 with `OTA_SECRET_KEY` set reject new signed updates. Update those boards once over USB. Unsigned boards update normally; afterwards, unsigned boards without an `OTA_MANIFEST_URL` need `OTA_ALLOW_UNSIGNED_PUSH = True` to keep following update notifications.
 

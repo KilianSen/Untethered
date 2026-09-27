@@ -16,6 +16,7 @@ import http.server
 import ipaddress
 import json
 import os
+import re
 import socket
 import socketserver
 import sys
@@ -50,9 +51,15 @@ def next_seq(state_dir):
     return seq
 
 
-def compute_signature(secret, version, app_hash, sys_hash, seq):
-    """Computes standard RFC 2104 HMAC-SHA256 signature over version:app_hash:sys_hash:seq."""
-    payload = f"{version}:{app_hash}:{sys_hash}:{seq}".encode("utf-8")
+def compute_signature(secret, version, app_hash, sys_hash, seq, targets=None):
+    """
+    Computes standard RFC 2104 HMAC-SHA256 signature over version:app_hash:sys_hash:seq, plus
+    :target1,target2 for targeted manifests (must match _signed_payload on the board).
+    """
+    payload = f"{version}:{app_hash}:{sys_hash}:{seq}"
+    if targets:
+        payload += ":" + ",".join(targets)
+    payload = payload.encode("utf-8")
     key = secret.encode("utf-8") if isinstance(secret, str) else secret
     return hmac.new(key, payload, hashlib.sha256).hexdigest()
 
@@ -188,11 +195,34 @@ def find_library(root_dir):
     return None, None
 
 
-def build_manifest(root_dir, project_dir, host_ip, port, version, secret=None, include_boot=False):
+def parse_targets(value):
+    """
+    --target value -> manifest target list: None for 'all' (untargeted), else sorted unique
+    device names and groups. Untargeted manifests only reach boards without a DEVICE_GROUP.
+    """
+    names = sorted({t.strip() for t in (value or "").split(",") if t.strip()})
+    if not names or names == ["all"]:
+        return None
+    if "all" in names:
+        raise ValueError("'all' cannot be combined with other targets")
+    return names
+
+
+def manifest_filename(targets):
+    """Separate files per target list, so deploys for different groups can run side by side
+    (on different --port values) without overwriting each other's manifest."""
+    if not targets:
+        return "manifest.json"
+    return "manifest." + re.sub(r"[^A-Za-z0-9._+-]", "_", "+".join(targets)) + ".json"
+
+
+def build_manifest(root_dir, project_dir, host_ip, port, version, secret=None, include_boot=False,
+                   targets=None):
     """
     Builds manifest.json. Returns (manifest, served_files) where served_files maps each
     manifest path to the local file the HTTP server is allowed to serve for it.
     boot.py is left out unless include_boot is set (boards also need OTA_ALLOW_BOOT_UPDATE).
+    targets (device names and groups, from parse_targets) limits which boards install it.
     """
     if not project_dir or not os.path.isdir(project_dir):
         raise FileNotFoundError(f"Project directory not found: {project_dir}")
@@ -200,6 +230,7 @@ def build_manifest(root_dir, project_dir, host_ip, port, version, secret=None, i
     manifest = {
         "version": version,
         "seq": next_seq(root_dir),
+        **({"targets": list(targets)} if targets else {}),
         "components": {
             "app": {
                 "hash": "",
@@ -251,9 +282,10 @@ def build_manifest(root_dir, project_dir, host_ip, port, version, secret=None, i
             manifest["components"]["app"]["hash"],
             manifest["components"]["system"]["hash"],
             manifest["seq"],
+            targets,
         )
 
-    manifest_path = os.path.join(root_dir, "manifest.json")
+    manifest_path = os.path.join(root_dir, manifest_filename(targets))
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)
     served_files["manifest.json"] = manifest_path
@@ -299,7 +331,8 @@ def send_push_beacon(beacon_port, target, manifest_url, host_ip=None):
         "url": manifest_url
     }).encode("utf-8")
 
-    print(f"\n[Push] Broadcasting instant OTA trigger to target '{target}' on UDP port {beacon_port}...")
+    label = ", ".join(target) if isinstance(target, list) else target
+    print(f"\n[Push] Broadcasting instant OTA trigger to '{label}' on UDP port {beacon_port}...")
     broadcast(payload, beacon_port, host_ip)
 
 
@@ -326,7 +359,10 @@ def main():
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="HTTP server port (default 8000)")
     parser.add_argument("--version", type=str, default=None,
                         help="Firmware version string (default: a dev-YYYYMMDD-HHMMSS timestamp)")
-    parser.add_argument("--target", type=str, default="all", help="Target device name or 'all'")
+    parser.add_argument("--target", type=str, default="all",
+                        help="Device names and/or DEVICE_GROUPs, comma-separated (e.g. 'radar' or "
+                             "'radar-1,radar-2'). Only those boards install the update. Default 'all' "
+                             "reaches boards without a group. --wipe takes a single name or group.")
     parser.add_argument("--beacon-port", type=int, default=DEFAULT_BEACON_PORT, help="UDP discovery port")
     parser.add_argument("--host-ip", type=str, default=None, help="Explicit host IP address for devices to reach")
     parser.add_argument("--secret", type=str, default=None,
@@ -344,6 +380,14 @@ def main():
     root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     host_ip = get_local_ip(args.host_ip)
     version = args.version or time.strftime("dev-%Y%m%d-%H%M%S")
+    try:
+        targets = parse_targets(args.target)
+    except ValueError as e:
+        print(f"[Error] --target: {e}")
+        sys.exit(1)
+    if args.wipe and targets and len(targets) > 1:
+        print("[Error] --wipe takes a single device name or group (the signature covers one target).")
+        sys.exit(1)
 
     if args.project_dir:
         project_dir = os.path.abspath(args.project_dir)
@@ -398,6 +442,7 @@ def main():
     print(f" Repository Root:  {root_dir}")
     print(f" Target Project:   {project_dir}")
     print(f" Manifest URL:     http://{host_ip}:{args.port}/manifest.json  (boards' OTA_MANIFEST_URL)")
+    print(f" Targets:          {', '.join(targets) if targets else 'all boards without a DEVICE_GROUP'}")
     others = [ip for ip in lan_ip_candidates() if ip != host_ip] if not args.host_ip else []
     if others:
         print(f" Other LAN addresses: {', '.join(others)}  (pick the boards' network with --host-ip)")
@@ -410,7 +455,7 @@ def main():
     print("=" * 70)
 
     manifest, served_files = build_manifest(root_dir, project_dir, host_ip, args.port, version,
-                                            secret=secret, include_boot=args.include_boot)
+                                            secret=secret, include_boot=args.include_boot, targets=targets)
     manifest_url = f"http://{host_ip}:{args.port}/manifest.json"
 
     app_comp = manifest["components"]["app"]
@@ -445,7 +490,7 @@ def main():
     print(f"\n[HTTP Server] Serving files at http://{host_ip}:{args.port}/")
 
     if not args.no_push:
-        send_push_beacon(args.beacon_port, args.target, manifest_url, host_ip=host_ip)
+        send_push_beacon(args.beacon_port, targets or "all", manifest_url, host_ip=host_ip)
 
     print("\n[Listening] HTTP server active. Press Ctrl+C to shut down.")
     try:

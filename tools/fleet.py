@@ -49,6 +49,7 @@ def main():
                 dev_id = info["id"]
                 devices[dev_id] = {
                     "ip": info.get("ip", addr[0]),
+                    "group": info.get("group") or "-",
                     "version": info.get("version", "unknown"),
                     "app_hash": info.get("app_hash", "-"),
                     "sys_hash": info.get("sys_hash", "-"),
@@ -68,11 +69,11 @@ def main():
 
             # Render dashboard
             clear_screen()
-            print("=" * 82)
+            print("=" * 94)
             print("  UNTETHERED ACTIVE FLEET MONITOR")
-            print("=" * 82)
-            print(f"{'DEVICE ID':<16} {'IP ADDRESS':<16} {'VER':<8} {'APP HASH':<10} {'SYS HASH':<10} {'STATUS':<10} {'SEEN':<8}")
-            print("-" * 82)
+            print("=" * 94)
+            print(f"{'DEVICE ID':<16} {'GROUP':<11} {'IP ADDRESS':<16} {'VER':<8} {'APP HASH':<10} {'SYS HASH':<10} {'STATUS':<10} {'SEEN':<8}")
+            print("-" * 94)
 
             if not devices:
                 print("  No devices detected yet. Awaiting heartbeats...")
@@ -82,9 +83,9 @@ def main():
                     state_str = dev["status"]
                     if elapsed > args.offline_after:
                         state_str = "OFFLINE"
-                    print(f"{dev_id:<16} {dev['ip']:<16} {dev['version']:<8} {dev['app_hash']:<10} {dev['sys_hash']:<10} {state_str:<10} {elapsed}s ago")
+                    print(f"{dev_id:<16} {dev['group']:<11} {dev['ip']:<16} {dev['version']:<8} {dev['app_hash']:<10} {dev['sys_hash']:<10} {state_str:<10} {elapsed}s ago")
 
-            print("-" * 82)
+            print("-" * 94)
             print("Ctrl+C to quit.")
 
     except KeyboardInterrupt:

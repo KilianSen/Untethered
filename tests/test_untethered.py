@@ -95,15 +95,16 @@ class RuntimeTestCase(unittest.TestCase):
             with open(path, "wb") as f:
                 f.write(data)
 
-    def publish(self, secret=SECRET, seq=None, mutate=None):
+    def publish(self, secret=SECRET, seq=None, mutate=None, targets=None):
         """Builds a manifest with the real deploy tool and serves it through the fake HTTP layer."""
-        manifest, served = deploy.build_manifest(self.host, self.project, "host", 8000, "1.0.0", secret=secret)
+        manifest, served = deploy.build_manifest(self.host, self.project, "host", 8000, "1.0.0", secret=secret,
+                                                 targets=targets)
         if seq is not None:
             manifest["seq"] = seq
             if secret:
                 c = manifest["components"]
                 manifest["signature"] = deploy.compute_signature(
-                    secret, "1.0.0", c["app"]["hash"], c["system"]["hash"], seq)
+                    secret, "1.0.0", c["app"]["hash"], c["system"]["hash"], seq, targets)
         if mutate:
             mutate(manifest, served)
         self.req.routes = {}
@@ -210,6 +211,72 @@ class UpdateTests(RuntimeTestCase):
         self.assertEqual(self.read("main.py"), b"new")
         self.assertEqual(self.rt.get_version(), "2.0.0")
         self.assertFalse(os.path.exists(".ota_journal.json"))
+
+
+class TargetingTests(RuntimeTestCase):
+    def setUp(self):
+        super().setUp()
+        self.rt._device_name = "radar-1"
+
+    def test_manifest_for_the_board_or_its_group_installs(self):
+        self.rt._device_group = "radar"
+        self.publish(targets=["radar"])
+        self.assertTrue(self.rt.check_update())
+        self.write_project({"main.py": b"print('v2')\n"})
+        self.publish(targets=["radar-1", "sensor"])
+        self.assertTrue(self.rt.check_update())
+        self.assertEqual(self.read("main.py"), b"print('v2')\n")
+
+    def test_manifest_for_another_group_is_skipped(self):
+        self.rt._device_group = "radar"
+        # Another group may use another key: skipped before the signature is even checked
+        self.publish(secret="sensor-key", targets=["sensor"])
+        self.assertFalse(self.rt.check_update())
+        self.assertFalse(os.path.exists("main.py"))
+        self.assertTrue(self.rt._seq_is_fresh("manifest", 1), "a skipped manifest must not move the counter")
+
+    def test_grouped_board_ignores_untargeted_manifest(self):
+        self.rt._device_group = "radar"
+        self.publish()
+        self.assertFalse(self.rt.check_update())
+        self.assertFalse(os.path.exists("main.py"))
+
+        self.rt._device_group = None  # Ungrouped boards keep taking untargeted manifests
+        self.assertTrue(self.rt.check_update())
+
+    def test_target_list_is_covered_by_the_signature(self):
+        self.rt._device_group = "radar"
+
+        def retarget(manifest, served):
+            manifest["targets"] = ["radar"]  # Signed for sensors, relabelled for radars
+
+        self.publish(targets=["sensor"], mutate=retarget)
+        self.assertFalse(self.rt.check_update())
+
+        self.rt._device_group = None
+        self.publish(targets=["radar-1"], mutate=lambda m, s: m.pop("targets"))
+        self.assertFalse(self.rt.check_update(), "stripping the targets must break the signature")
+
+    def test_untargeted_signature_keeps_the_v21_format(self):
+        # Boards on v2.1.0 must still accept untargeted manifests
+        self.assertEqual(deploy.compute_signature(SECRET, "1", "a", "s", 5),
+                         hmac.new(SECRET.encode(), b"1:a:s:5", hashlib.sha256).hexdigest())
+        self.assertNotEqual(deploy.compute_signature(SECRET, "1", "a", "s", 5, ["radar"]),
+                            deploy.compute_signature(SECRET, "1", "a", "s", 5))
+
+    def test_malformed_targets_rejected(self):
+        for bad in ("radar", [], ["a,b"], [1]):
+            self.publish(mutate=lambda m, s, bad=bad: m.__setitem__("targets", bad))
+            self.assertFalse(self.rt.check_update(), repr(bad))
+
+    def test_push_and_wipe_addressing(self):
+        self.rt._device_group = "radar"
+        for target in ("all", "radar-1", "radar", ["sensor", "radar"]):
+            self.assertTrue(self.rt._is_addressed(target), target)
+        for target in ("sensor", ["sensor", "radar-2"], None):
+            self.assertFalse(self.rt._is_addressed(target), target)
+        self.rt._device_group = None
+        self.assertFalse(self.rt._is_addressed(None))
 
 
 class ProvisionAndWipeTests(RuntimeTestCase):
@@ -612,6 +679,15 @@ class ToolTests(unittest.TestCase):
             self.assertEqual(deploy.get_local_ip("10.1.1.1"), "10.1.1.1")
         finally:
             deploy._default_route_ip, deploy.socket.gethostbyname_ex = orig
+
+    def test_parse_targets(self):
+        self.assertIsNone(deploy.parse_targets("all"))
+        self.assertIsNone(deploy.parse_targets(""))
+        self.assertEqual(deploy.parse_targets(" radar-2, radar ,radar-2"), ["radar", "radar-2"])
+        with self.assertRaises(ValueError):
+            deploy.parse_targets("all,radar")
+        self.assertEqual(deploy.manifest_filename(None), "manifest.json")
+        self.assertEqual(deploy.manifest_filename(["radar", "x/y"]), "manifest.radar+x_y.json")
 
     def test_bundler_strips_only_module_docstring(self):
         import bundle

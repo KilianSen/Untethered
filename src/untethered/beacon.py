@@ -60,7 +60,7 @@ def _background_daemon(ota_interval, enable_telnet=True):
                 data, addr = beacon_sock.recvfrom(512)
                 msg = json.loads(data.decode("utf-8"))
                 target = msg.get("target", "all")
-                if target in ("all", _device_name):
+                if _is_addressed(target):
                     if msg.get("cmd") == "ota":
                         _handle_push(msg)
                     elif msg.get("cmd") == "wipe":
@@ -76,6 +76,7 @@ def _background_daemon(ota_interval, enable_telnet=True):
             comp = state.get("components", {})
             payload = {
                 "id": _device_name,
+                "group": _device_group,
                 "ip": get_ip(),
                 "version": state.get("version", "0.0.0"),
                 "app_hash": comp.get("app", "")[:7],
@@ -104,6 +105,15 @@ def _background_daemon(ota_interval, enable_telnet=True):
                     print(f"[Untethered] Periodic OTA check error: {e}")
 
         time.sleep_ms(100)
+
+
+def _is_addressed(target):
+    """Whether a push or wipe is meant for this board: "all", its name or its group, or (push only)
+    a list of those. Pushes are hints; the manifest's own target list decides what gets installed."""
+    for t in (target if isinstance(target, list) else [target]):
+        if t in ("all", _device_name) or (_device_group and t == _device_group):
+            return True
+    return False
 
 
 _PUSH_COOLDOWN_S = 10  # Unauthenticated pushes can't keep the daemon busy with back-to-back checks

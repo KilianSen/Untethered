@@ -335,11 +335,38 @@ def _http_get(url):
         return urequests.get(url)  # Old urequests builds without timeout support
 
 
+def _is_targeted(targets):
+    """
+    Whether a manifest's target list (device names and groups) covers this board. A board with
+    a DEVICE_GROUP only takes manifests that name it, so a deploy without --target can never
+    put another group's firmware on it; ungrouped boards also take untargeted manifests.
+    """
+    if targets is None:
+        return not _device_group
+    if not isinstance(targets, list):
+        return True  # Malformed: not ours to skip, _validate_manifest rejects it
+    return _device_name in targets or (bool(_device_group) and _device_group in targets)
+
+
+def _signed_payload(manifest, app_h, sys_h):
+    """What the manifest signature covers. Untargeted manifests keep the v2.1 format, so older
+    boards still accept them; they reject targeted ones, which they could not honour."""
+    payload = f"{manifest.get('version', 'unknown')}:{app_h}:{sys_h}:{manifest.get('seq')}"
+    targets = manifest.get("targets")
+    if targets is not None:
+        payload += ":" + ",".join(targets)
+    return payload
+
+
 def _validate_manifest(manifest, key):
     """Returns an error string, or None if the manifest is well-formed and (if keyed) authentic."""
     components = manifest.get("components")
     if not isinstance(components, dict) or not components:
         return "Manifest has no components"
+    targets = manifest.get("targets")
+    if targets is not None and (not isinstance(targets, list) or not targets or not all(
+            isinstance(t, str) and t and "," not in t for t in targets)):
+        return "Malformed target list"
 
     for cname, cdata in components.items():
         if cname not in _components_allowed:
@@ -367,7 +394,7 @@ def _validate_manifest(manifest, key):
             return "Manifest is unsigned"
         app_h = components.get("app", {}).get("hash", "")
         sys_h = components.get("system", {}).get("hash", "")
-        expected_sig = _compute_hmac_sha256(key, f"{manifest.get('version', 'unknown')}:{app_h}:{sys_h}:{seq}")
+        expected_sig = _compute_hmac_sha256(key, _signed_payload(manifest, app_h, sys_h))
         if not _constant_time_compare(signature, expected_sig):
             return "Signature mismatch"
         if not _seq_is_fresh("manifest", seq, allow_equal=True):
@@ -401,6 +428,14 @@ def check_update(manifest_url=None, secret_key=None):
             res.close()
     except Exception as e:
         print(f"[Untethered] Could not fetch manifest: {e}")
+        return False
+
+    # Skipping is always safe, so this runs before the signature check: a manifest for another
+    # group (maybe signed with that group's key) is skipped quietly instead of raising an alarm
+    targets = manifest.get("targets") if isinstance(manifest, dict) else None
+    if not _is_targeted(targets):
+        print(f"[Untethered] Update is for {', '.join(str(t) for t in targets) if targets else 'ungrouped boards'}, "
+              f"not this board. Skipping.")
         return False
 
     key = secret_key if secret_key is not None else _secret_key

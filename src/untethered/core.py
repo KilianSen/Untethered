@@ -38,6 +38,7 @@ _initialized = False
 _device_status = "INITIALIZING"
 _last_error = None
 _device_name = "pico-w"
+_device_group = None  # e.g. "radar": which firmware this board runs (see _is_targeted)
 _version_file = "version.json"
 _manifest_url = None
 _secret_key = None
@@ -105,11 +106,13 @@ def _wifi_connect(wlan, ssid, password):
 
 
 def provision(ssid, password, name="pico-w", country="DE", secret_key=None, boot=True, auto_start=True,
-              manifest_url=None, telnet_password=None):
+              manifest_url=None, telnet_password=None, group=None):
     """
     Provisions a fresh board with Wi-Fi credentials and bootstrap scripts.
     Generates config.py, boot.py, and starts Untethered on Core 1.
-    manifest_url is where tools/deploy.py serves updates, e.g. "http://192.168.1.50:8000/manifest.json".
+    manifest_url is only needed without secret_key, or for scheduled checks: signed boards follow the
+    URL in update notifications. It is where tools/deploy.py serves updates,
+    e.g. "http://192.168.1.50:8000/manifest.json".
     """
     # repr() produces valid, escaped Python literals even for quotes/backslashes in passwords
     config_lines = [
@@ -125,6 +128,8 @@ def provision(ssid, password, name="pico-w", country="DE", secret_key=None, boot
         config_lines.append("OTA_MANIFEST_URL = " + repr(manifest_url))
     if telnet_password:
         config_lines.append("TELNET_PASSWORD = " + repr(telnet_password))
+    if group:
+        config_lines.append("DEVICE_GROUP = " + repr(group))
 
     with open("config.py", "w") as f:
         f.write("\n".join(config_lines) + "\n")
@@ -138,7 +143,7 @@ def provision(ssid, password, name="pico-w", country="DE", secret_key=None, boot
     if auto_start:
         print("[Untethered] Board provisioned. Starting Untethered runtime...")
         start(ssid=ssid, password=password, name=name, secret_key=secret_key, country=country,
-              manifest_url=manifest_url, telnet_password=telnet_password)
+              manifest_url=manifest_url, telnet_password=telnet_password, group=group)
 
 
 def _load_config():
@@ -169,13 +174,14 @@ def start(
     country=None,
     allow_boot_update=None,
     allow_unsigned_push=None,
+    group=None,
 ):
     """
     Initializes WiFi, remote REPL, and background OTA listeners.
     Spawns background services on the RP2040 second core via _thread.
     Arguments that are omitted (None) fall back to config.py, then to built-in defaults.
     """
-    global _initialized, _device_name, _manifest_url, _secret_key, _telnet_port, _telnet_password
+    global _initialized, _device_name, _device_group, _manifest_url, _secret_key, _telnet_port, _telnet_password
     global _beacon_port, _beacon_interval, _wdt, _device_status
     global _wifi_ssid, _wifi_password, _allow_boot_update, _allow_unsigned_push
 
@@ -198,6 +204,7 @@ def start(
     watchdog_ms = cfg(watchdog_ms, "WATCHDOG_TIMEOUT_MS", 0)
 
     _device_name = cfg(name, "DEVICE_NAME", "pico-w")
+    _device_group = cfg(group, "DEVICE_GROUP", None)
     _manifest_url = cfg(manifest_url, "OTA_MANIFEST_URL", None)
     _secret_key = cfg(secret_key, "OTA_SECRET_KEY", None)
     _telnet_port = cfg(telnet_port, "TELNET_PORT", 23)

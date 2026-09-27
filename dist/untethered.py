@@ -1,9 +1,9 @@
 """
 Untethered: Wireless OTA & Remote REPL Library for Raspberry Pi Pico W
-Version: 2.1.0
+Version: 2.2.0
 Automated single-file bundle built from modular sources.
 """
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 # ============================================================================
 # Component: core.py
@@ -45,6 +45,7 @@ _initialized = False
 _device_status = "INITIALIZING"
 _last_error = None
 _device_name = "pico-w"
+_device_group = None  # e.g. "radar": which firmware this board runs (see _is_targeted)
 _version_file = "version.json"
 _manifest_url = None
 _secret_key = None
@@ -112,11 +113,13 @@ def _wifi_connect(wlan, ssid, password):
 
 
 def provision(ssid, password, name="pico-w", country="DE", secret_key=None, boot=True, auto_start=True,
-              manifest_url=None, telnet_password=None):
+              manifest_url=None, telnet_password=None, group=None):
     """
     Provisions a fresh board with Wi-Fi credentials and bootstrap scripts.
     Generates config.py, boot.py, and starts Untethered on Core 1.
-    manifest_url is where tools/deploy.py serves updates, e.g. "http://192.168.1.50:8000/manifest.json".
+    manifest_url is only needed without secret_key, or for scheduled checks: signed boards follow the
+    URL in update notifications. It is where tools/deploy.py serves updates,
+    e.g. "http://192.168.1.50:8000/manifest.json".
     """
     # repr() produces valid, escaped Python literals even for quotes/backslashes in passwords
     config_lines = [
@@ -132,6 +135,8 @@ def provision(ssid, password, name="pico-w", country="DE", secret_key=None, boot
         config_lines.append("OTA_MANIFEST_URL = " + repr(manifest_url))
     if telnet_password:
         config_lines.append("TELNET_PASSWORD = " + repr(telnet_password))
+    if group:
+        config_lines.append("DEVICE_GROUP = " + repr(group))
 
     with open("config.py", "w") as f:
         f.write("\n".join(config_lines) + "\n")
@@ -145,7 +150,7 @@ def provision(ssid, password, name="pico-w", country="DE", secret_key=None, boot
     if auto_start:
         print("[Untethered] Board provisioned. Starting Untethered runtime...")
         start(ssid=ssid, password=password, name=name, secret_key=secret_key, country=country,
-              manifest_url=manifest_url, telnet_password=telnet_password)
+              manifest_url=manifest_url, telnet_password=telnet_password, group=group)
 
 
 def _load_config():
@@ -176,13 +181,14 @@ def start(
     country=None,
     allow_boot_update=None,
     allow_unsigned_push=None,
+    group=None,
 ):
     """
     Initializes WiFi, remote REPL, and background OTA listeners.
     Spawns background services on the RP2040 second core via _thread.
     Arguments that are omitted (None) fall back to config.py, then to built-in defaults.
     """
-    global _initialized, _device_name, _manifest_url, _secret_key, _telnet_port, _telnet_password
+    global _initialized, _device_name, _device_group, _manifest_url, _secret_key, _telnet_port, _telnet_password
     global _beacon_port, _beacon_interval, _wdt, _device_status
     global _wifi_ssid, _wifi_password, _allow_boot_update, _allow_unsigned_push
 
@@ -205,6 +211,7 @@ def start(
     watchdog_ms = cfg(watchdog_ms, "WATCHDOG_TIMEOUT_MS", 0)
 
     _device_name = cfg(name, "DEVICE_NAME", "pico-w")
+    _device_group = cfg(group, "DEVICE_GROUP", None)
     _manifest_url = cfg(manifest_url, "OTA_MANIFEST_URL", None)
     _secret_key = cfg(secret_key, "OTA_SECRET_KEY", None)
     _telnet_port = cfg(telnet_port, "TELNET_PORT", 23)
@@ -905,11 +912,38 @@ def _http_get(url):
         return urequests.get(url)  # Old urequests builds without timeout support
 
 
+def _is_targeted(targets):
+    """
+    Whether a manifest's target list (device names and groups) covers this board. A board with
+    a DEVICE_GROUP only takes manifests that name it, so a deploy without --target can never
+    put another group's firmware on it; ungrouped boards also take untargeted manifests.
+    """
+    if targets is None:
+        return not _device_group
+    if not isinstance(targets, list):
+        return True  # Malformed: not ours to skip, _validate_manifest rejects it
+    return _device_name in targets or (bool(_device_group) and _device_group in targets)
+
+
+def _signed_payload(manifest, app_h, sys_h):
+    """What the manifest signature covers. Untargeted manifests keep the v2.1 format, so older
+    boards still accept them; they reject targeted ones, which they could not honour."""
+    payload = f"{manifest.get('version', 'unknown')}:{app_h}:{sys_h}:{manifest.get('seq')}"
+    targets = manifest.get("targets")
+    if targets is not None:
+        payload += ":" + ",".join(targets)
+    return payload
+
+
 def _validate_manifest(manifest, key):
     """Returns an error string, or None if the manifest is well-formed and (if keyed) authentic."""
     components = manifest.get("components")
     if not isinstance(components, dict) or not components:
         return "Manifest has no components"
+    targets = manifest.get("targets")
+    if targets is not None and (not isinstance(targets, list) or not targets or not all(
+            isinstance(t, str) and t and "," not in t for t in targets)):
+        return "Malformed target list"
 
     for cname, cdata in components.items():
         if cname not in _components_allowed:
@@ -937,7 +971,7 @@ def _validate_manifest(manifest, key):
             return "Manifest is unsigned"
         app_h = components.get("app", {}).get("hash", "")
         sys_h = components.get("system", {}).get("hash", "")
-        expected_sig = _compute_hmac_sha256(key, f"{manifest.get('version', 'unknown')}:{app_h}:{sys_h}:{seq}")
+        expected_sig = _compute_hmac_sha256(key, _signed_payload(manifest, app_h, sys_h))
         if not _constant_time_compare(signature, expected_sig):
             return "Signature mismatch"
         if not _seq_is_fresh("manifest", seq, allow_equal=True):
@@ -971,6 +1005,14 @@ def check_update(manifest_url=None, secret_key=None):
             res.close()
     except Exception as e:
         print(f"[Untethered] Could not fetch manifest: {e}")
+        return False
+
+    # Skipping is always safe, so this runs before the signature check: a manifest for another
+    # group (maybe signed with that group's key) is skipped quietly instead of raising an alarm
+    targets = manifest.get("targets") if isinstance(manifest, dict) else None
+    if not _is_targeted(targets):
+        print(f"[Untethered] Update is for {', '.join(str(t) for t in targets) if targets else 'ungrouped boards'}, "
+              f"not this board. Skipping.")
         return False
 
     key = secret_key if secret_key is not None else _secret_key
@@ -1158,7 +1200,7 @@ def _background_daemon(ota_interval, enable_telnet=True):
                 data, addr = beacon_sock.recvfrom(512)
                 msg = json.loads(data.decode("utf-8"))
                 target = msg.get("target", "all")
-                if target in ("all", _device_name):
+                if _is_addressed(target):
                     if msg.get("cmd") == "ota":
                         _handle_push(msg)
                     elif msg.get("cmd") == "wipe":
@@ -1174,6 +1216,7 @@ def _background_daemon(ota_interval, enable_telnet=True):
             comp = state.get("components", {})
             payload = {
                 "id": _device_name,
+                "group": _device_group,
                 "ip": get_ip(),
                 "version": state.get("version", "0.0.0"),
                 "app_hash": comp.get("app", "")[:7],
@@ -1202,6 +1245,15 @@ def _background_daemon(ota_interval, enable_telnet=True):
                     print(f"[Untethered] Periodic OTA check error: {e}")
 
         time.sleep_ms(100)
+
+
+def _is_addressed(target):
+    """Whether a push or wipe is meant for this board: "all", its name or its group, or (push only)
+    a list of those. Pushes are hints; the manifest's own target list decides what gets installed."""
+    for t in (target if isinstance(target, list) else [target]):
+        if t in ("all", _device_name) or (_device_group and t == _device_group):
+            return True
+    return False
 
 
 _PUSH_COOLDOWN_S = 10  # Unauthenticated pushes can't keep the daemon busy with back-to-back checks
