@@ -94,12 +94,12 @@ Unplug the board and plug it into any USB power supply. From now on you can work
 > **Which version gets installed?** `github:KilianSen/Untethered` installs whatever is on the `main` branch at that moment, not necessarily a published release. `main` is usually fine, but it can contain changes that haven't been released yet. To install a specific release, add its tag:
 >
 > ```bash
-> mpremote mip install github:KilianSen/Untethered@v2.0.0
+> mpremote mip install github:KilianSen/Untethered@v2.1.0
 > ```
 >
 > The available versions are listed on the [releases page](https://github.com/KilianSen/Untethered/releases). The same `@` works for any branch or commit, so only use tags you trust.
 >
-> **Not sure?** Use the newest release tag. Also keep in mind that `deploy.py` sends the library from *your copy* of this repository to your boards. If you cloned `main`, your boards get `main`; run `git checkout v2.0.0` in the repository folder to match the release.
+> **Not sure?** Use the newest release tag. Also keep in mind that `deploy.py` sends the library from *your copy* of this repository to your boards. If you cloned `main`, your boards get `main`; run `git checkout v2.1.0` in the repository folder to match the release.
 
 > Settings can be changed later by editing `config.py` on the board (over USB, or from the remote REPL). All options are listed in the [settings reference](#7-settings-reference-configpy).
 
@@ -346,6 +346,7 @@ This section is for the curious. You don't need it to use Untethered.
 * **Networking runs in a thread on Core 1.** MicroPython's threading on the RP2040 is still marked experimental, and its network stack is not fully thread-safe. Test long-running installations well.
 * **The watchdog only guards the network services.** `WATCHDOG_TIMEOUT_MS` restarts the board if the background services or an update freeze, not if your own program hangs without crashing.
 * **Some mistakes still need USB:** a broken `config.py` or `boot.py`, or a full `wipe("all")`.
+* **Upgrading to v2.1.0:** a board with `OTA_SECRET_KEY` but no `TELNET_PASSWORD` now turns its remote REPL off (an open REPL would expose the update key). Updates keep working; set `TELNET_PASSWORD` to get the REPL back.
 * **Upgrading from v1.0.0:** signed updates now include a sequence number, so boards on v1.0.0 with `OTA_SECRET_KEY` set reject new signed updates. Update those boards once over USB. Unsigned boards update normally; afterwards, unsigned boards without an `OTA_MANIFEST_URL` need `OTA_ALLOW_UNSIGNED_PUSH = True` to keep following update notifications.
 
 ---
