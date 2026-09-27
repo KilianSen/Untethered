@@ -689,6 +689,24 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(deploy.manifest_filename(None), "manifest.json")
         self.assertEqual(deploy.manifest_filename(["radar", "x/y"]), "manifest.radar+x_y.json")
 
+    def test_fleet_table_fits_any_terminal(self):
+        import fleet
+        dev = {"ip": "192.168.1.10", "group": "radar", "version": "dev-20260927-220106",
+               "app_hash": "b7c2c6e", "sys_hash": "9d04e1a", "status": "RUNNING", "last_seen": 100}
+        devices = {f"radar-{i:02d}": dict(dev) for i in range(12)}
+        devices["greenhouse-temperature-sensor"] = dict(dev, group="-")
+        for w in range(10, 200, 7):
+            for h in range(3, 40, 3):
+                lines = fleet.render(devices, 100, 15, w, h, 8266)
+                self.assertTrue(all(len(l) <= w for l in lines) and len(lines) <= h, (w, h))
+
+        wide = "\n".join(fleet.render(devices, 100, 15, 200, 40, 8266))
+        self.assertIn("dev-20260927-220106", wide)
+        self.assertIn("greenhouse-temperature-~", wide)  # Capped, not the full name
+        narrow = fleet.render(devices, 100, 15, 60, 40, 8266)
+        self.assertEqual(narrow[3].split(), ["DEVICE", "ID", "IP", "ADDRESS", "STATUS", "SEEN"])
+        self.assertIn("... and", fleet.render(devices, 100, 15, 80, 10, 8266)[-1])
+
     def test_bundler_strips_only_module_docstring(self):
         import bundle
         src = ['"""Module doc."""\n', "def f():\n", '    """\n', "    Doc.\n", '    """\n', "\n", "X = f\n"]
