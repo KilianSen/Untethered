@@ -145,6 +145,7 @@ Useful options:
 | :--- | :--- |
 | `--target workshop-pico` | Update only this board (try an update on one board before the others). |
 | `--version 1.4.0` | Label the update. Without it, a timestamp like `dev-20260927-220106` is used. Boards show it in the fleet monitor. |
+| `--host-ip 192.168.1.50` | The address boards download from. Only needed if `deploy.py` picked the wrong network (it lists other addresses it found). |
 | `--no-push` | Serve the update without notifying boards. They pick it up on their next scheduled check (see `OTA_CHECK_INTERVAL`). |
 | `--dry-run` | Only show what would be sent. |
 
@@ -223,6 +224,8 @@ To close the session, close the window (PuTTY) or press **Ctrl+]** and type `qui
 
 > [!WARNING]
 > **The REPL is a full Python shell: whoever gets in controls the board.** Always set `TELNET_PASSWORD`. Telnet is not encrypted, so the password keeps casual users out but not someone who can listen to your network traffic. If you don't need the REPL, turn it off with `ENABLE_TELNET = False`.
+>
+> From the REPL, anyone can read the update key in `config.py` and use it to send updates or wipe commands to **every** board that shares that key. That's why a board with `OTA_SECRET_KEY` but no `TELNET_PASSWORD` turns the REPL off by itself. After a wrong password, the board waits before it accepts the next login (1 s, doubling up to 60 s).
 
 > **Not sure whether to keep the REPL on?** Keep it on while you're still building and fixing your project. Once a board is finished and just does its job (especially on a network shared with other people), turn it off. Updates keep working without it.
 
@@ -237,8 +240,9 @@ To close the session, close the window (PuTTY) or press **Ctrl+]** and type `qui
 | Board doesn't join Wi-Fi | The network must be 2.4 GHz. Check the name and password in `config.py`. The board keeps retrying in the background, so it reconnects once the network is back. |
 | `deploy.py` runs but boards don't update | **Firewall:** allow Python on private networks (Windows asks the first time; if you clicked "Cancel", allow it under *Windows Security → Firewall → Allow an app*). It needs TCP port 8000 and UDP port 8266. Also check that the board's `OTA_MANIFEST_URL` still matches the *Manifest URL* printed by `deploy.py`; your PC's IP may have changed. To change it, connect the board over USB and run the Step 4 `provision(...)` command again with the new URL. |
 | Board prints `SECURITY ERROR ... Signature mismatch` | The update key given to `deploy.py` differs from `OTA_SECRET_KEY` on the board. |
-| Board prints `Manifest is older than the installed one` | The board has already installed a newer update. Just deploy again. |
+| Board prints `Manifest is older than the installed one` | The board has already installed a newer update. Just deploy again. If you deploy from more than one PC, their clocks must be roughly right: update numbers come from the clock, so a PC whose clock is behind is rejected until it catches up. |
 | One board didn't update, the others did | It was probably off or still starting when `deploy.py` sent the notification. Run `deploy.py` again. Boards that are often off can check by themselves: set `OTA_CHECK_INTERVAL = 300`. |
+| Telnet connection refused, board prints `Telnet REPL disabled` | The board has an update key but no Telnet password. Set `TELNET_PASSWORD` in `config.py` (see [the REPL warning](#5-the-remote-repl-telnet)). |
 | Board prints `Push ignored: unsigned board without OTA_MANIFEST_URL` | Set `OTA_MANIFEST_URL` (and ideally `OTA_SECRET_KEY`) on the board. See [Security](#8-security). |
 | `fleet.py` shows no boards | Same firewall rule as above (UDP 8266). Guest networks and some mesh systems block devices from seeing each other. |
 | Board rejects the library update (`does not load on this board`) | Your MicroPython is too old for the precompiled `untethered.mpy`. Update MicroPython, or copy `dist/untethered.py` to the board's `lib/` folder instead. |
@@ -258,7 +262,7 @@ To close the session, close the window (PuTTY) or press **Ctrl+]** and type `qui
 | `OTA_MANIFEST_URL` | `None` | Where the board looks for updates (the *Manifest URL* from `deploy.py`). | Always set it |
 | `OTA_SECRET_KEY` | `None` | Update key. When set, the board only accepts updates and wipe commands signed with it. | Always set it |
 | `OTA_CHECK_INTERVAL` | `0` | Also check for updates every N seconds (0 = only when `deploy.py` notifies the board). | `0`; `300` for boards that are sometimes off |
-| `TELNET_PASSWORD` | `None` | Password for the remote REPL. | Always set it |
+| `TELNET_PASSWORD` | `None` | Password for the remote REPL. Required when `OTA_SECRET_KEY` is set, or the REPL stays off. | Always set it |
 | `ENABLE_TELNET` | `True` | Set to `False` to turn the remote REPL off. | `True` while building, `False` once finished |
 | `TELNET_PORT` | `23` | Port of the remote REPL. | Leave it |
 | `BEACON_PORT` | `8266` | UDP port for announcements and update notifications (must match the PC tools). | Leave it |
@@ -285,7 +289,7 @@ Untethered can install code on your boards over the network, so it matters who e
 
 **Without an update key**, anyone on your network could send code to your boards. As a safety net, an unsigned board only downloads from its own `OTA_MANIFEST_URL` and ignores remote wipes. A board with neither a key nor a manifest URL ignores update notifications entirely, unless you set `OTA_ALLOW_UNSIGNED_PUSH = True`. That setting is meant for quick experiments on a network you fully trust: it lets *anyone* on the network install code on the board.
 
-The remote REPL is protected by `TELNET_PASSWORD`, but Telnet itself is unencrypted (see [the warning above](#5-the-remote-repl-telnet)). Updates are sent over plain HTTP: the update key guarantees they are *authentic*, not that they are *private*.
+The remote REPL is protected by `TELNET_PASSWORD`, but Telnet itself is unencrypted (see [the warning above](#5-the-remote-repl-telnet)). **The update key is only as safe as the REPL:** anyone who gets into the REPL (or holds a board) can read the key, and all boards that share it trust whatever it signs. To limit the damage, give groups of boards different keys, and turn the REPL off on finished boards. Update notifications themselves are not signed, so a board handles at most one every 10 seconds. Updates are sent over plain HTTP: the update key guarantees they are *authentic*, not that they are *private*.
 
 The signing uses HMAC-SHA256 (RFC 2104) with timing-safe comparison and needs no extra packages.
 

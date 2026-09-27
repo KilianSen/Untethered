@@ -224,7 +224,13 @@ def start(
         if _allow_unsigned_push and not _manifest_url:
             print("[Untethered] WARNING: OTA_ALLOW_UNSIGNED_PUSH is on. Anyone on the network can install code.")
     if telnet and not _telnet_password:
-        print("[Untethered] WARNING: Telnet REPL has no password. Anyone on the network gets a Python shell.")
+        if _secret_key:
+            # A REPL can read config.OTA_SECRET_KEY, and with it sign updates for every board
+            print("[Untethered] WARNING: Telnet REPL disabled: OTA_SECRET_KEY is set but TELNET_PASSWORD "
+                  "is not, so an open REPL would expose the update key. Set TELNET_PASSWORD to enable it.")
+            telnet = False
+        else:
+            print("[Untethered] WARNING: Telnet REPL has no password. Anyone on the network gets a Python shell.")
 
     # Set country code for regulatory compliance
     try:
@@ -273,8 +279,18 @@ def start(
     else:
         print("[Untethered] Warning: _thread unavailable. Background daemon not started.")
 
-    if _device_status != "STANDBY":
-        _device_status = "RUNNING"
+    _device_status = _initial_status()
+
+
+def _initial_status():
+    """STANDBY after an app wipe (which reboots, so the status must come from flash), else RUNNING."""
+    try:
+        with open(_version_file, "r") as f:
+            if json.load(f).get("components", {}).get("app") == "":
+                return "STANDBY"
+    except Exception:
+        pass
+    return "RUNNING"
 
 # ============================================================================
 # Component: crypto.py
@@ -454,6 +470,80 @@ class _TelnetLogin:
         except Exception:
             return False
         return ok
+
+
+_MAX_PENDING_LOGINS = 3
+_MAX_LOGIN_COOLDOWN = 600  # ticks (60s)
+
+
+def _close_quietly(sock):
+    try:
+        sock.close()
+    except Exception:
+        pass
+
+
+class _TelnetGate:
+    """
+    Accepts Telnet clients and runs their logins, a little per daemon tick.
+    Several logins run side by side and a new client pushes out the oldest one still waiting,
+    so an idle or hostile client can't hold the login slot and lock everyone else out.
+    Wrong passwords back off exponentially (1s, 2s, 4s ... 60s) to slow down guessing;
+    connections that time out or drop without sending a password don't count as guesses.
+    A logged-in session is only replaced once the new client has authenticated.
+    """
+
+    def __init__(self, server_sock):
+        self.server = server_sock
+        self.pending = []
+        self.cooldown = 0
+        self.failures = 0
+
+    def tick(self, password):
+        if self.cooldown:
+            self.cooldown -= 1
+        for login in list(self.pending):
+            try:
+                verdict = login.poll(password)
+            except Exception:
+                verdict = False
+            if verdict is None:
+                continue
+            self.pending.remove(login)
+            if verdict:
+                self.failures = 0
+                self._open(login.sock)
+            else:
+                _close_quietly(login.sock)
+                if login.done:
+                    self.failures = min(self.failures + 1, 7)
+                    self.cooldown = min(10 << (self.failures - 1), _MAX_LOGIN_COOLDOWN)
+
+        if self.cooldown:
+            return
+        try:
+            r, _, _ = select.select([self.server], [], [], 0)
+            if not r:
+                return
+            client_sock, client_addr = self.server.accept()
+        except Exception:
+            return
+        print(f"[Untethered] Telnet client connected from {client_addr}")
+        if not password:
+            self._open(client_sock)
+            return
+        if len(self.pending) >= _MAX_PENDING_LOGINS:
+            _close_quietly(self.pending.pop(0).sock)
+        try:
+            self.pending.append(_TelnetLogin(client_sock))
+        except Exception:
+            _close_quietly(client_sock)
+
+    def _open(self, client_sock):
+        try:
+            _open_telnet_session(client_sock)
+        except Exception:
+            _close_quietly(client_sock)
 
 
 def _open_telnet_session(client_sock):
@@ -709,8 +799,8 @@ def wipe(scope="app", reboot=True):
         except Exception as e:
             print(f"[Untethered] Notice: could not write standby stub: {e}")
 
-        if "components" in state and "app" in state["components"]:
-            state["components"]["app"] = ""
+        # An empty app hash marks STANDBY across the reboot and forces the next deploy to re-sync
+        state.setdefault("components", {})["app"] = ""
         if "hashes" in state:
             state["hashes"] = {k: v for k, v in state["hashes"].items() if k.startswith("lib/") or k == _boot_file}
         try:
@@ -1046,47 +1136,20 @@ def _background_daemon(ota_interval, enable_telnet=True):
     ota_timer = 0
     wifi_timer = 0
     wifi_backoff = 10  # seconds; doubles while the network stays down (max 5 min)
-    pending_login = None
-    login_cooldown = 0  # ticks; slows password guessing after a failed login
+    telnet_gate = _TelnetGate(telnet_sock) if telnet_sock else None
 
     while True:
         # Feed hardware watchdog if enabled
         if _wdt:
             _wdt.feed()
 
-        # 1. Handle Telnet logins and incoming connections. One login is collected at a time,
-        # a little per tick, so an idle or hostile client can never stall the other services.
-        # A logged-in session is only replaced once the new client has authenticated.
-        if telnet_sock:
+        # 1. Handle Telnet logins and incoming connections, a little per tick, so an idle or
+        # hostile client can never stall the other services.
+        if telnet_gate:
             try:
-                if pending_login:
-                    verdict = pending_login.poll(_telnet_password)
-                    if verdict is not None:
-                        client_sock = pending_login.sock
-                        pending_login = None
-                        if verdict:
-                            _open_telnet_session(client_sock)
-                        else:
-                            client_sock.close()
-                            login_cooldown = 10
-                elif login_cooldown:
-                    login_cooldown -= 1
-                else:
-                    r, _, _ = select.select([telnet_sock], [], [], 0)
-                    if r:
-                        client_sock, client_addr = telnet_sock.accept()
-                        print(f"[Untethered] Telnet client connected from {client_addr}")
-                        if _telnet_password:
-                            pending_login = _TelnetLogin(client_sock)
-                        else:
-                            _open_telnet_session(client_sock)
+                telnet_gate.tick(_telnet_password)
             except Exception:
-                if pending_login:
-                    try:
-                        pending_login.sock.close()
-                    except Exception:
-                        pass
-                    pending_login = None
+                pass
 
         # 2. Handle incoming UDP push commands & presence beacon
         try:
@@ -1141,12 +1204,21 @@ def _background_daemon(ota_interval, enable_telnet=True):
         time.sleep_ms(100)
 
 
+_PUSH_COOLDOWN_S = 10  # Unauthenticated pushes can't keep the daemon busy with back-to-back checks
+_last_push_check = None
+
+
 def _handle_push(msg):
     """
     A push only says "check now". Its URL is honoured when manifests are signed (the signature
     protects the content), or when no manifest URL is configured (open dev mode).
     Otherwise the board checks its own configured manifest URL.
     """
+    global _last_push_check
+    now = time.time()
+    # Also absorbs the duplicate packets deploy.py sends; 0 <= keeps a clock stepped back from blocking
+    if _last_push_check is not None and 0 <= now - _last_push_check < _PUSH_COOLDOWN_S:
+        return
     push_url = msg.get("url")
     if not push_url or (not _secret_key and (_manifest_url or not _allow_unsigned_push)):
         push_url = _manifest_url
@@ -1154,6 +1226,7 @@ def _handle_push(msg):
         print("[Untethered] Push ignored: unsigned board without OTA_MANIFEST_URL. "
               "Set OTA_SECRET_KEY, or OTA_ALLOW_UNSIGNED_PUSH = True on a trusted LAN.")
         return
+    _last_push_check = now
     print(f"[Untethered] Received instant push trigger! Updating from {push_url}...")
     check_update(push_url)
 

@@ -279,6 +279,21 @@ class ProvisionAndWipeTests(RuntimeTestCase):
         self.rt._handle_push({"cmd": "ota", "url": "http://dev/manifest.json"})
         self.assertEqual(urls, ["http://dev/manifest.json"])
 
+    def test_push_flood_is_rate_limited(self):
+        urls = []
+        now = [1000]
+        self.rt.check_update = lambda url=None: urls.append(url)
+        self.rt.time = types.SimpleNamespace(time=lambda: now[0])
+        for _ in range(50):
+            self.rt._handle_push({"cmd": "ota"})
+        self.assertEqual(len(urls), 1)
+        now[0] += self.rt._PUSH_COOLDOWN_S
+        self.rt._handle_push({"cmd": "ota"})
+        self.assertEqual(len(urls), 2)
+        now[0] -= 3600  # Clock stepped back (e.g. NTP) must not block pushes for an hour
+        self.rt._handle_push({"cmd": "ota"})
+        self.assertEqual(len(urls), 3)
+
 
 class ProtectionTests(RuntimeTestCase):
     def test_boot_py_skipped_by_default(self):
@@ -342,6 +357,14 @@ class ProtectionTests(RuntimeTestCase):
         self.assertTrue(self.rt._resume_pending_update())
         self.assertFalse(self.rt._seq_is_fresh("manifest", 41, allow_equal=True))
 
+    def test_app_wipe_reports_standby_after_reboot(self):
+        # The wipe reboots, so the status must survive in flash; also on a never-updated board
+        self.rt.wipe("app", reboot=False)
+        self.assertEqual(load_runtime()._initial_status(), "STANDBY")
+        self.publish(seq=1)
+        self.assertTrue(self.rt.check_update())
+        self.assertEqual(load_runtime()._initial_status(), "RUNNING")
+
     def test_factory_reset_keeps_replay_counters(self):
         self.rt._save_seq("wipe", 10)
         with open("main.py", "w") as f:
@@ -364,6 +387,19 @@ class FakeSock:
 
     def recv(self, n):
         return self.chunks.pop(0)
+
+    def close(self):
+        self.closed = True
+
+
+class FakeServer:
+    """Listening socket; `chunks` holds clients waiting to be accepted (the select fake reads it)."""
+
+    def __init__(self):
+        self.chunks = []
+
+    def accept(self):
+        return self.chunks.pop(0), ("10.0.0.9", 1234)
 
 
 class NetworkTests(RuntimeTestCase):
@@ -400,6 +436,78 @@ class NetworkTests(RuntimeTestCase):
         self.rt.time = types.SimpleNamespace(sleep_ms=sleeps.append, sleep=sleeps.append)
         self.assertIsNone(self.rt._TelnetLogin(FakeSock([])).poll("pwd"))
         self.assertEqual(sleeps, [])
+
+    def gate(self):
+        opened = []
+        self.rt._open_telnet_session = opened.append
+        server = FakeServer()
+        return self.rt._TelnetGate(server), server, opened
+
+    def test_idle_client_cannot_hold_the_login_slot(self):
+        gate, server, opened = self.gate()
+        idle = [FakeSock([]) for _ in range(self.rt._MAX_PENDING_LOGINS)]
+        for sock in idle:
+            server.chunks.append(sock)
+            gate.tick("pwd")
+        user = FakeSock([b"pwd\r\n"])
+        server.chunks.append(user)
+        gate.tick("pwd")  # Accepted: the oldest idle login is pushed out
+        self.assertTrue(getattr(idle[0], "closed", False))
+        gate.tick("pwd")
+        self.assertEqual(opened, [user])
+
+    def test_wrong_passwords_back_off_but_timeouts_do_not(self):
+        gate, server, opened = self.gate()
+        server.chunks.append(FakeSock([]))
+        gate.tick("pwd")
+        for _ in range(self.rt._LOGIN_TICKS):
+            gate.tick("pwd")
+        self.assertEqual((gate.pending, gate.cooldown), ([], 0), "a timeout is not a guess")
+
+        cooldowns = []
+        for _ in range(3):
+            server.chunks.append(FakeSock([b"guess\r\n"]))
+            while not gate.cooldown:
+                gate.tick("pwd")
+            cooldowns.append(gate.cooldown)
+            while gate.cooldown:
+                gate.tick("pwd")
+        self.assertEqual(cooldowns, [10, 20, 40])
+
+        server.chunks.append(FakeSock([b"pwd\r\n"]))
+        gate.tick("pwd")
+        gate.tick("pwd")
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(gate.failures, 0)
+
+    def test_telnet_off_when_key_set_without_password(self):
+        started = []
+
+        class FakeWLAN:
+            def __init__(self, iface):
+                pass
+
+            def active(self, flag):
+                pass
+
+            def isconnected(self):
+                return True
+
+            def ifconfig(self):
+                return ("10.0.0.2",)
+
+            def config(self, **kw):
+                pass
+
+        self.rt.network = types.SimpleNamespace(WLAN=FakeWLAN, STA_IF=0)
+        self.rt._thread = types.SimpleNamespace(start_new_thread=lambda f, args: started.append(args))
+        self.rt.start(secret_key=SECRET, telnet=True, ota_interval=0)
+        self.assertEqual(started, [(0, False)])
+
+        rt = load_runtime()
+        rt.network, rt._thread = self.rt.network, self.rt._thread
+        rt.start(secret_key=SECRET, telnet=True, telnet_password="pwd", ota_interval=0)
+        self.assertEqual(started[-1], (0, True))
 
     def test_async_app_is_awaited(self):
         ran = []
@@ -489,6 +597,21 @@ class ToolTests(unittest.TestCase):
             manifest, _ = deploy.build_manifest(root, proj, "h", 1, "1.0.0")
             paths = [f["path"] for f in manifest["components"]["app"]["files"]]
             self.assertEqual(sorted(paths), ["app/config.py", "main.py"])
+
+    def test_host_ip_prefers_default_route_lan_address(self):
+        orig = deploy._default_route_ip, deploy.socket.gethostbyname_ex
+        try:
+            deploy._default_route_ip = lambda: "192.168.1.50"
+            # Windows often lists a Hyper-V/WSL adapter first; Tailscale is 100.64/10
+            deploy.socket.gethostbyname_ex = lambda h: (h, [], ["172.20.0.1", "100.101.1.2", "192.168.1.50"])
+            self.assertEqual(deploy.get_local_ip(), "192.168.1.50")
+            self.assertEqual(deploy.lan_ip_candidates(), ["192.168.1.50", "172.20.0.1"])
+
+            deploy._default_route_ip = lambda: "100.101.1.2"  # VPN holds the default route
+            self.assertEqual(deploy.get_local_ip(), "172.20.0.1")
+            self.assertEqual(deploy.get_local_ip("10.1.1.1"), "10.1.1.1")
+        finally:
+            deploy._default_route_ip, deploy.socket.gethostbyname_ex = orig
 
     def test_bundler_strips_only_module_docstring(self):
         import bundle

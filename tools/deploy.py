@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import hmac
 import http.server
+import ipaddress
 import json
 import os
 import socket
@@ -63,31 +64,79 @@ def compute_wipe_signature(secret, scope, target, seq):
     return hmac.new(key, payload, hashlib.sha256).hexdigest()
 
 
-def get_local_ip(override_ip=None):
-    """Detects primary LAN IP address of this machine, avoiding VPN/Tailscale interfaces."""
-    if override_ip:
-        return override_ip
+def is_lan_ip(ip):
+    """Private IPv4 (10/8, 172.16/12, 192.168/16). Excludes loopback, link-local and the
+    100.64/10 carrier-grade NAT range that Tailscale uses."""
     try:
-        host_name = socket.gethostname()
-        addrs = socket.gethostbyname_ex(host_name)[2]
-        lan_addrs = [
-            a for a in addrs
-            if not a.startswith("127.") and not a.startswith("169.254.") and not a.startswith("100.")
-        ]
-        if lan_addrs:
-            return lan_addrs[0]
-    except Exception:
-        pass
+        addr = ipaddress.IPv4Address(ip)
+    except ValueError:
+        return False
+    return addr.is_private and not addr.is_loopback and not addr.is_link_local
 
+
+def _default_route_ip():
+    """Address of the interface that carries the default route (connect() on UDP sends nothing)."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("8.8.8.8", 1))
-        ip = s.getsockname()[0]
+        return s.getsockname()[0]
     except Exception:
-        ip = "127.0.0.1"
+        return None
     finally:
         s.close()
-    return ip
+
+
+def lan_ip_candidates():
+    """Every LAN address of this machine, the default-route interface first."""
+    candidates = [_default_route_ip()]
+    try:
+        candidates += socket.gethostbyname_ex(socket.gethostname())[2]
+    except Exception:
+        pass
+    result = []
+    for ip in candidates:
+        if ip and is_lan_ip(ip) and ip not in result:
+            result.append(ip)
+    return result
+
+
+def get_local_ip(override_ip=None):
+    """
+    Detects this machine's LAN address. The default-route interface is preferred over the
+    first address the hostname resolves to, which on Windows is often a Hyper-V, WSL or
+    Docker adapter that the boards cannot reach.
+    """
+    if override_ip:
+        return override_ip
+    candidates = lan_ip_candidates()
+    return candidates[0] if candidates else (_default_route_ip() or "127.0.0.1")
+
+
+def broadcast(payload, beacon_port, host_ip=None, repeat=3):
+    """
+    Broadcasts payload to the boards. The socket is bound to host_ip so the limited broadcast
+    leaves through the interface the boards are on (on Windows it otherwise picks one adapter),
+    and the /24 subnet broadcast is sent as well for hosts where binding does not steer it.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    targets = ["255.255.255.255"]
+    if host_ip and is_lan_ip(host_ip):
+        try:
+            sock.bind((host_ip, 0))
+        except OSError:
+            pass
+        targets.append(str(ipaddress.IPv4Network(host_ip + "/24", strict=False).broadcast_address))
+    try:
+        for _ in range(repeat):
+            for addr in targets:
+                try:
+                    sock.sendto(payload, (addr, beacon_port))
+                except OSError:
+                    pass
+            time.sleep(0.1)
+    finally:
+        sock.close()
 
 
 def compute_sha256(filepath):
@@ -242,10 +291,8 @@ class ManifestHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         sys.stderr.write(f"[HTTP] {self.address_string()} - {format % args}\n")
 
 
-def send_push_beacon(beacon_port, target, manifest_url):
+def send_push_beacon(beacon_port, target, manifest_url, host_ip=None):
     """Sends a UDP broadcast to notify devices to update immediately."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     payload = json.dumps({
         "cmd": "ota",
         "target": target,
@@ -253,16 +300,11 @@ def send_push_beacon(beacon_port, target, manifest_url):
     }).encode("utf-8")
 
     print(f"\n[Push] Broadcasting instant OTA trigger to target '{target}' on UDP port {beacon_port}...")
-    for _ in range(3):
-        sock.sendto(payload, ("255.255.255.255", beacon_port))
-        time.sleep(0.1)
-    sock.close()
+    broadcast(payload, beacon_port, host_ip)
 
 
-def send_wipe_beacon(beacon_port, target, scope, secret, state_dir):
+def send_wipe_beacon(beacon_port, target, scope, secret, state_dir, host_ip=None):
     """Sends a UDP broadcast commanding target devices to wipe the specified scope."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     seq = next_seq(state_dir)
     msg = {
         "cmd": "wipe",
@@ -274,10 +316,7 @@ def send_wipe_beacon(beacon_port, target, scope, secret, state_dir):
 
     payload = json.dumps(msg).encode("utf-8")
     print(f"\n[Push] Broadcasting remote WIPE command (scope='{scope}', target='{target}') on UDP port {beacon_port}...")
-    for _ in range(3):
-        sock.sendto(payload, ("255.255.255.255", beacon_port))
-        time.sleep(0.1)
-    sock.close()
+    broadcast(payload, beacon_port, host_ip)
 
 
 def main():
@@ -349,7 +388,8 @@ def main():
                 print("Wipe operation cancelled by user.")
                 return
 
-        send_wipe_beacon(args.beacon_port, args.target, args.wipe, secret=secret, state_dir=root_dir)
+        send_wipe_beacon(args.beacon_port, args.target, args.wipe, secret=secret, state_dir=root_dir,
+                         host_ip=host_ip)
         print(f"\n[Complete] Remote wipe command broadcast successfully for scope '{args.wipe}'.")
         return
 
@@ -358,6 +398,9 @@ def main():
     print(f" Repository Root:  {root_dir}")
     print(f" Target Project:   {project_dir}")
     print(f" Manifest URL:     http://{host_ip}:{args.port}/manifest.json  (boards' OTA_MANIFEST_URL)")
+    others = [ip for ip in lan_ip_candidates() if ip != host_ip] if not args.host_ip else []
+    if others:
+        print(f" Other LAN addresses: {', '.join(others)}  (pick the boards' network with --host-ip)")
     if secret:
         print(" Cryptographic Signature: HMAC-SHA256 Enabled")
     else:
@@ -402,7 +445,7 @@ def main():
     print(f"\n[HTTP Server] Serving files at http://{host_ip}:{args.port}/")
 
     if not args.no_push:
-        send_push_beacon(args.beacon_port, args.target, manifest_url)
+        send_push_beacon(args.beacon_port, args.target, manifest_url, host_ip=host_ip)
 
     print("\n[Listening] HTTP server active. Press Ctrl+C to shut down.")
     try:

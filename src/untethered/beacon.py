@@ -38,47 +38,20 @@ def _background_daemon(ota_interval, enable_telnet=True):
     ota_timer = 0
     wifi_timer = 0
     wifi_backoff = 10  # seconds; doubles while the network stays down (max 5 min)
-    pending_login = None
-    login_cooldown = 0  # ticks; slows password guessing after a failed login
+    telnet_gate = _TelnetGate(telnet_sock) if telnet_sock else None
 
     while True:
         # Feed hardware watchdog if enabled
         if _wdt:
             _wdt.feed()
 
-        # 1. Handle Telnet logins and incoming connections. One login is collected at a time,
-        # a little per tick, so an idle or hostile client can never stall the other services.
-        # A logged-in session is only replaced once the new client has authenticated.
-        if telnet_sock:
+        # 1. Handle Telnet logins and incoming connections, a little per tick, so an idle or
+        # hostile client can never stall the other services.
+        if telnet_gate:
             try:
-                if pending_login:
-                    verdict = pending_login.poll(_telnet_password)
-                    if verdict is not None:
-                        client_sock = pending_login.sock
-                        pending_login = None
-                        if verdict:
-                            _open_telnet_session(client_sock)
-                        else:
-                            client_sock.close()
-                            login_cooldown = 10
-                elif login_cooldown:
-                    login_cooldown -= 1
-                else:
-                    r, _, _ = select.select([telnet_sock], [], [], 0)
-                    if r:
-                        client_sock, client_addr = telnet_sock.accept()
-                        print(f"[Untethered] Telnet client connected from {client_addr}")
-                        if _telnet_password:
-                            pending_login = _TelnetLogin(client_sock)
-                        else:
-                            _open_telnet_session(client_sock)
+                telnet_gate.tick(_telnet_password)
             except Exception:
-                if pending_login:
-                    try:
-                        pending_login.sock.close()
-                    except Exception:
-                        pass
-                    pending_login = None
+                pass
 
         # 2. Handle incoming UDP push commands & presence beacon
         try:
@@ -133,12 +106,21 @@ def _background_daemon(ota_interval, enable_telnet=True):
         time.sleep_ms(100)
 
 
+_PUSH_COOLDOWN_S = 10  # Unauthenticated pushes can't keep the daemon busy with back-to-back checks
+_last_push_check = None
+
+
 def _handle_push(msg):
     """
     A push only says "check now". Its URL is honoured when manifests are signed (the signature
     protects the content), or when no manifest URL is configured (open dev mode).
     Otherwise the board checks its own configured manifest URL.
     """
+    global _last_push_check
+    now = time.time()
+    # Also absorbs the duplicate packets deploy.py sends; 0 <= keeps a clock stepped back from blocking
+    if _last_push_check is not None and 0 <= now - _last_push_check < _PUSH_COOLDOWN_S:
+        return
     push_url = msg.get("url")
     if not push_url or (not _secret_key and (_manifest_url or not _allow_unsigned_push)):
         push_url = _manifest_url
@@ -146,6 +128,7 @@ def _handle_push(msg):
         print("[Untethered] Push ignored: unsigned board without OTA_MANIFEST_URL. "
               "Set OTA_SECRET_KEY, or OTA_ALLOW_UNSIGNED_PUSH = True on a trusted LAN.")
         return
+    _last_push_check = now
     print(f"[Untethered] Received instant push trigger! Updating from {push_url}...")
     check_update(push_url)
 

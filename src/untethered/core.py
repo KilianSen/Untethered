@@ -217,7 +217,13 @@ def start(
         if _allow_unsigned_push and not _manifest_url:
             print("[Untethered] WARNING: OTA_ALLOW_UNSIGNED_PUSH is on. Anyone on the network can install code.")
     if telnet and not _telnet_password:
-        print("[Untethered] WARNING: Telnet REPL has no password. Anyone on the network gets a Python shell.")
+        if _secret_key:
+            # A REPL can read config.OTA_SECRET_KEY, and with it sign updates for every board
+            print("[Untethered] WARNING: Telnet REPL disabled: OTA_SECRET_KEY is set but TELNET_PASSWORD "
+                  "is not, so an open REPL would expose the update key. Set TELNET_PASSWORD to enable it.")
+            telnet = False
+        else:
+            print("[Untethered] WARNING: Telnet REPL has no password. Anyone on the network gets a Python shell.")
 
     # Set country code for regulatory compliance
     try:
@@ -266,5 +272,15 @@ def start(
     else:
         print("[Untethered] Warning: _thread unavailable. Background daemon not started.")
 
-    if _device_status != "STANDBY":
-        _device_status = "RUNNING"
+    _device_status = _initial_status()
+
+
+def _initial_status():
+    """STANDBY after an app wipe (which reboots, so the status must come from flash), else RUNNING."""
+    try:
+        with open(_version_file, "r") as f:
+            if json.load(f).get("components", {}).get("app") == "":
+                return "STANDBY"
+    except Exception:
+        pass
+    return "RUNNING"

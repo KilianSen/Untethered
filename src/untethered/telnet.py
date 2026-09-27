@@ -127,6 +127,80 @@ class _TelnetLogin:
         return ok
 
 
+_MAX_PENDING_LOGINS = 3
+_MAX_LOGIN_COOLDOWN = 600  # ticks (60s)
+
+
+def _close_quietly(sock):
+    try:
+        sock.close()
+    except Exception:
+        pass
+
+
+class _TelnetGate:
+    """
+    Accepts Telnet clients and runs their logins, a little per daemon tick.
+    Several logins run side by side and a new client pushes out the oldest one still waiting,
+    so an idle or hostile client can't hold the login slot and lock everyone else out.
+    Wrong passwords back off exponentially (1s, 2s, 4s ... 60s) to slow down guessing;
+    connections that time out or drop without sending a password don't count as guesses.
+    A logged-in session is only replaced once the new client has authenticated.
+    """
+
+    def __init__(self, server_sock):
+        self.server = server_sock
+        self.pending = []
+        self.cooldown = 0
+        self.failures = 0
+
+    def tick(self, password):
+        if self.cooldown:
+            self.cooldown -= 1
+        for login in list(self.pending):
+            try:
+                verdict = login.poll(password)
+            except Exception:
+                verdict = False
+            if verdict is None:
+                continue
+            self.pending.remove(login)
+            if verdict:
+                self.failures = 0
+                self._open(login.sock)
+            else:
+                _close_quietly(login.sock)
+                if login.done:
+                    self.failures = min(self.failures + 1, 7)
+                    self.cooldown = min(10 << (self.failures - 1), _MAX_LOGIN_COOLDOWN)
+
+        if self.cooldown:
+            return
+        try:
+            r, _, _ = select.select([self.server], [], [], 0)
+            if not r:
+                return
+            client_sock, client_addr = self.server.accept()
+        except Exception:
+            return
+        print(f"[Untethered] Telnet client connected from {client_addr}")
+        if not password:
+            self._open(client_sock)
+            return
+        if len(self.pending) >= _MAX_PENDING_LOGINS:
+            _close_quietly(self.pending.pop(0).sock)
+        try:
+            self.pending.append(_TelnetLogin(client_sock))
+        except Exception:
+            _close_quietly(client_sock)
+
+    def _open(self, client_sock):
+        try:
+            _open_telnet_session(client_sock)
+        except Exception:
+            _close_quietly(client_sock)
+
+
 def _open_telnet_session(client_sock):
     """Replaces any current session and attaches the REPL to client_sock."""
     global _active_telnet_stream

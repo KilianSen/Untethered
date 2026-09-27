@@ -229,8 +229,8 @@ def wipe(scope="app", reboot=True):
         except Exception as e:
             print(f"[Untethered] Notice: could not write standby stub: {e}")
 
-        if "components" in state and "app" in state["components"]:
-            state["components"]["app"] = ""
+        # An empty app hash marks STANDBY across the reboot and forces the next deploy to re-sync
+        state.setdefault("components", {})["app"] = ""
         if "hashes" in state:
             state["hashes"] = {k: v for k, v in state["hashes"].items() if k.startswith("lib/") or k == _boot_file}
         try:
