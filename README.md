@@ -36,7 +36,7 @@ It is a small MicroPython library for the board plus a few Python scripts for yo
   ```bash
   pip install mpremote
   ```
-* **This repository** on your PC, either with `git clone https://github.com/KilianSen/Untethered` or with GitHub's *Code → Download ZIP*. The PC tools live in its `tools/` folder, and all commands below are run from the repository folder.
+* **This repository** on your PC, either with `git clone https://github.com/KilianSen/Untethered` or by downloading the *Source code (zip)* of the newest release from the [releases page](https://github.com/KilianSen/Untethered/releases) (see [which version gets installed](#step-4-install-and-configure-the-board)). The PC tools live in its `tools/` folder, and all commands below are run from the repository folder.
 
 ---
 
@@ -90,6 +90,16 @@ The first command copies the library onto the board. The second one:
 3. connects to Wi-Fi and prints the board's IP address.
 
 Unplug the board and plug it into any USB power supply. From now on you can work on it over Wi-Fi.
+
+> **Which version gets installed?** `github:KilianSen/Untethered` installs whatever is on the `main` branch at that moment, not necessarily a published release. `main` is usually fine, but it can contain changes that haven't been released yet. To install a specific release, add its tag:
+>
+> ```bash
+> mpremote mip install github:KilianSen/Untethered@v2.0.0
+> ```
+>
+> The available versions are listed on the [releases page](https://github.com/KilianSen/Untethered/releases). The same `@` works for any branch or commit, so only use tags you trust.
+>
+> **Not sure?** Use the newest release tag. Also keep in mind that `deploy.py` sends the library from *your copy* of this repository to your boards. If you cloned `main`, your boards get `main`; run `git checkout v2.0.0` in the repository folder to match the release.
 
 > Settings can be changed later by editing `config.py` on the board (over USB, or from the remote REPL). All options are listed in the [settings reference](#7-settings-reference-configpy).
 
