@@ -635,6 +635,61 @@ class NetworkTests(RuntimeTestCase):
         self.assertFalse(self.rt._reconnect_wifi())
         self.assertEqual(calls[-1], ("net", None))
 
+    def test_wifi_reconnect_resets_a_busy_esp32_driver(self):
+        # ESP32 auto-reconnects on its own; connect() then raises until disconnect() resets it
+        calls = []
+
+        class FakeWLAN:
+            busy = True
+
+            def __init__(self, iface):
+                pass
+
+            def isconnected(self):
+                return False
+
+            def status(self):
+                return 202  # STAT_WRONG_PASSWORD: a disconnect reason, not STAT_CONNECTING
+
+            def active(self, flag):
+                pass
+
+            def disconnect(self):
+                calls.append("disconnect")
+                FakeWLAN.busy = False
+
+            def connect(self, ssid, pwd=None):
+                if FakeWLAN.busy:
+                    raise OSError("Wifi Internal State Error")
+                calls.append("connect")
+
+        self.rt.network = types.SimpleNamespace(WLAN=FakeWLAN, STA_IF=0, STAT_CONNECTING=1001)
+        self.rt._wifi_ssid, self.rt._wifi_password = "net", "pw"
+        self.assertFalse(self.rt._reconnect_wifi())
+        self.assertEqual(calls, ["disconnect", "connect"])
+
+    def test_low_latency_uses_the_ports_own_pm_constants(self):
+        modes = []
+
+        class FakeWLAN:
+            def __init__(self, iface):
+                pass
+
+            def config(self, pm):
+                modes.append(pm)
+
+        # CYW43 fallback when the port has no WLAN.PM_* constants
+        self.rt.network = types.SimpleNamespace(WLAN=FakeWLAN, STA_IF=0)
+        self.rt._set_low_latency(True)
+        self.rt._set_low_latency(False)
+        self.assertEqual(modes, [0xa11140, 0xa11142])
+
+        # ESP32 exposes its own values
+        FakeWLAN.PM_NONE, FakeWLAN.PM_PERFORMANCE = 0, 1
+        self.rt._set_low_latency(True)
+        self.rt._set_low_latency(False)
+        self.assertEqual(modes[2:], [0, 1])
+
 
 class ToolTests(unittest.TestCase):
     def test_missing_project_dir_is_an_error(self):

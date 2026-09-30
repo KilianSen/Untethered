@@ -54,7 +54,8 @@ _allow_boot_update = False
 _allow_unsigned_push = False
 _http_timeout = 10  # seconds; a vanished host must never hang the Core 1 daemon
 
-# CYW43 power-management modes (network.WLAN.PM_NONE / PM_PERFORMANCE)
+# CYW43 power-management modes, used when the port doesn't expose network.WLAN.PM_NONE /
+# PM_PERFORMANCE (ESP32 does, with different values)
 _PM_NONE = 0xa11140
 _PM_PERFORMANCE = 0xa11142
 
@@ -71,7 +72,11 @@ def get_ip():
 def _set_low_latency(enabled):
     """Disables Wi-Fi power-save sleep while a Telnet session is open (zero keystroke lag)."""
     try:
-        network.WLAN(network.STA_IF).config(pm=_PM_NONE if enabled else _PM_PERFORMANCE)
+        wlan = network.WLAN(network.STA_IF)
+        if enabled:
+            wlan.config(pm=getattr(network.WLAN, "PM_NONE", _PM_NONE))
+        else:
+            wlan.config(pm=getattr(network.WLAN, "PM_PERFORMANCE", _PM_PERFORMANCE))
     except Exception:
         pass
 
@@ -91,7 +96,13 @@ def _reconnect_wifi():
             return False  # Previous attempt still in progress
         print("[Untethered] Wi-Fi link down. Reconnecting...")
         wlan.active(True)
-        _wifi_connect(wlan, _wifi_ssid, _wifi_password)
+        try:
+            _wifi_connect(wlan, _wifi_ssid, _wifi_password)
+        except OSError:
+            # ESP32: the driver's own auto-reconnect still owns the connection, so connect()
+            # raises "Wifi Internal State Error". Reset it and start a fresh attempt.
+            wlan.disconnect()
+            _wifi_connect(wlan, _wifi_ssid, _wifi_password)
     except Exception as e:
         print(f"[Untethered] Wi-Fi reconnect error: {e}")
     return False
@@ -232,12 +243,15 @@ def start(
         else:
             print("[Untethered] WARNING: Telnet REPL has no password. Anyone on the network gets a Python shell.")
 
-    # Set country code for regulatory compliance
+    # Set country code for regulatory compliance (network.country on current ports, rp2.country on old Pico W builds)
     try:
-        import rp2
-        rp2.country(country)
+        network.country(country)
     except Exception:
-        pass
+        try:
+            import rp2
+            rp2.country(country)
+        except Exception:
+            pass
 
     # Connect WiFi
     wlan = network.WLAN(network.STA_IF)
