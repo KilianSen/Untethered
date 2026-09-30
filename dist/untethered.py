@@ -1,9 +1,9 @@
 """
 Untethered: Wireless OTA & Remote REPL Library for Raspberry Pi Pico W
-Version: 2.2.0
+Version: 2.2.1
 Automated single-file bundle built from modular sources.
 """
-__version__ = "2.2.0"
+__version__ = "2.2.1"
 
 # ============================================================================
 # Component: core.py

@@ -80,12 +80,12 @@ Unplug the board and plug it into any USB power supply. From now on you can work
 > **Which version gets installed?** `github:KilianSen/Untethered` installs whatever is on the `main` branch at that moment, not necessarily a published release. `main` is usually fine, but it can contain changes that haven't been released yet. To install a specific release, add its tag:
 >
 > ```bash
-> mpremote mip install github:KilianSen/Untethered@v2.2.0
+> mpremote mip install github:KilianSen/Untethered@v2.2.1
 > ```
 >
 > The available versions are listed on the [releases page](https://github.com/KilianSen/Untethered/releases). The same `@` works for any branch or commit, so only use tags you trust.
 >
-> **Not sure?** Use the newest release tag. Also keep in mind that `deploy.py` sends the library from *your copy* of this repository to your boards. If you cloned `main`, your boards get `main`; run `git checkout v2.2.0` in the repository folder to match the release.
+> **Not sure?** Use the newest release tag. Also keep in mind that `deploy.py` sends the library from *your copy* of this repository to your boards. If you cloned `main`, your boards get `main`; run `git checkout v2.2.1` in the repository folder to match the release.
 
 > Settings can be changed later by editing `config.py` on the board (over USB, or from the remote REPL). All options are listed in the [settings reference](#7-settings-reference-configpy).
 
