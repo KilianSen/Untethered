@@ -288,8 +288,10 @@ def start(
 
     # Launch daemon in background thread on Core 1
     if _thread:
+        # Everything that prints at startup runs here, before the daemon exists (see _open_telnet_server)
+        telnet_sock = _open_telnet_server(telnet)
         print("[Untethered] Starting background services on Core 1...")
-        _thread.start_new_thread(_background_daemon, (ota_interval, telnet))
+        _thread.start_new_thread(_background_daemon, (ota_interval, telnet_sock))
     else:
         print("[Untethered] Warning: _thread unavailable. Background daemon not started.")
 

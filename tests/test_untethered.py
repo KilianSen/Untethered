@@ -569,12 +569,46 @@ class NetworkTests(RuntimeTestCase):
         self.rt.network = types.SimpleNamespace(WLAN=FakeWLAN, STA_IF=0)
         self.rt._thread = types.SimpleNamespace(start_new_thread=lambda f, args: started.append(args))
         self.rt.start(secret_key=SECRET, telnet=True, ota_interval=0)
-        self.assertEqual(started, [(0, False)])
+        self.assertEqual(started, [(0, None)])
 
         rt = load_runtime()
         rt.network, rt._thread = self.rt.network, self.rt._thread
-        rt.start(secret_key=SECRET, telnet=True, telnet_password="pwd", ota_interval=0)
-        self.assertEqual(started[-1], (0, True))
+        rt.start(secret_key=SECRET, telnet=True, telnet_password="pwd", telnet_port=0, ota_interval=0)
+        telnet_sock = started[-1][1]
+        self.assertIsNotNone(telnet_sock)
+        telnet_sock.close()
+
+    def test_startup_output_is_printed_before_the_daemon_starts(self):
+        # Daemon output after boot lands in mpremote's raw-REPL handshake on ESP32 and breaks it
+        events = []
+
+        class FakeWLAN:
+            def __init__(self, iface):
+                pass
+
+            def active(self, flag):
+                pass
+
+            def isconnected(self):
+                return True
+
+            def ifconfig(self):
+                return ("10.0.0.2",)
+
+            def config(self, **kw):
+                pass
+
+        def spawn(f, args):
+            events.append("thread")
+            if args[1]:
+                args[1].close()
+
+        self.rt.network = types.SimpleNamespace(WLAN=FakeWLAN, STA_IF=0)
+        self.rt._thread = types.SimpleNamespace(start_new_thread=spawn)
+        self.rt.print = lambda *a, **k: events.append(" ".join(str(x) for x in a))
+        self.rt.start(secret_key=SECRET, telnet=True, telnet_password="pwd", telnet_port=0, ota_interval=0)
+        self.assertEqual(events[-1], "thread")
+        self.assertTrue(any("Remote REPL active" in e for e in events[:-1]))
 
     def test_async_app_is_awaited(self):
         ran = []

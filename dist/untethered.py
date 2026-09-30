@@ -295,8 +295,10 @@ def start(
 
     # Launch daemon in background thread on Core 1
     if _thread:
+        # Everything that prints at startup runs here, before the daemon exists (see _open_telnet_server)
+        telnet_sock = _open_telnet_server(telnet)
         print("[Untethered] Starting background services on Core 1...")
-        _thread.start_new_thread(_background_daemon, (ota_interval, telnet))
+        _thread.start_new_thread(_background_daemon, (ota_interval, telnet_sock))
     else:
         print("[Untethered] Warning: _thread unavailable. Background daemon not started.")
 
@@ -1161,23 +1163,29 @@ import socket
 import time
 
 
-def _background_daemon(ota_interval, enable_telnet=True):
-    # Setup Telnet server socket if enabled
-    telnet_sock = None
-    if enable_telnet:
-        try:
-            telnet_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            telnet_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            telnet_sock.setblocking(False)
-            telnet_sock.bind(("0.0.0.0", _telnet_port))
-            telnet_sock.listen(1)
-            print(f"[Untethered] Remote REPL active on port {_telnet_port}")
-        except Exception as e:
-            print(f"[Untethered] Could not start Telnet server: {e}")
-            telnet_sock = None
-    else:
+def _open_telnet_server(enable_telnet):
+    """
+    Opens the Telnet listening socket, or returns None. Called by start() on the main thread
+    before the daemon is spawned: output printed later by the daemon lands wherever the console
+    happens to be, and on ESP32 that is inside mpremote's raw-REPL handshake, which then fails.
+    """
+    if not enable_telnet:
         print("[Untethered] Remote REPL (Telnet) is disabled.")
+        return None
+    try:
+        telnet_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        telnet_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        telnet_sock.setblocking(False)
+        telnet_sock.bind(("0.0.0.0", _telnet_port))
+        telnet_sock.listen(1)
+        print(f"[Untethered] Remote REPL active on port {_telnet_port}")
+        return telnet_sock
+    except Exception as e:
+        print(f"[Untethered] Could not start Telnet server: {e}")
+        return None
 
+
+def _background_daemon(ota_interval, telnet_sock=None):
     # Setup Beacon socket
     beacon_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     beacon_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
